@@ -1,5 +1,16 @@
 # VMB Launcher Changelog
 
+## v0.2.1 (2026-05-10)
+
+### Fixed
+- **New-mod "Create" button stayed greyed out with no explanation** when the user typed a name with uppercase letters (e.g. `SecondMod`). The old regex required all-lowercase + underscores; loosened to `^[A-Za-z][A-Za-z0-9_]{1,63}$` (start with letter, 2–64 chars, letters / digits / underscore).
+- Added a live inline hint under the name field showing exactly why the button is disabled — e.g. *"Name must start with a letter"*, *"Name can only contain letters, digits, and underscores. \"-\" isn't allowed."* — so users never have to guess.
+- Tooltip on the Create button explains the same reason on hover.
+
+### Tests
+- 20 new test cases covering `NewModWindow.ValidateName` (legal names, illegal chars, length bounds, leading-digit / leading-underscore rejection, whitespace trim).
+- Total: 84 tests, all passing.
+
 ## v0.2.0 (2026-05-10)
 
 ### Added

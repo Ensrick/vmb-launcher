@@ -10,7 +10,9 @@ public partial class NewModWindow : Window
 {
     private readonly Settings _settings;
     private readonly Action<string> _log;
-    private static readonly Regex NameRegex = new(@"^[a-z][a-z0-9_]{2,63}$", RegexOptions.Compiled);
+    // Looser than VMB convention but matches what Windows allows for a folder name.
+    // Name must start with a letter and contain only letters/digits/underscore. 2-64 chars.
+    private static readonly Regex NameRegex = new(@"^[A-Za-z][A-Za-z0-9_]{1,63}$", RegexOptions.Compiled);
 
     public NewModWindow(Settings settings, Action<string> log)
     {
@@ -51,14 +53,40 @@ public partial class NewModWindow : Window
     private void UpdateCreateEnabled(bool preflightOk)
     {
         _preflightPassed = preflightOk;
-        BtnCreate.IsEnabled = preflightOk && IsNameValid();
+        RefreshButton();
     }
 
     private bool IsNameValid() => NameRegex.IsMatch(TbName.Text.Trim());
 
+    /// <summary>Per-keystroke validation. Returns the error to display, or null if the name is valid.</summary>
+    public static string? ValidateName(string raw)
+    {
+        var name = (raw ?? "").Trim();
+        if (string.IsNullOrEmpty(name)) return "Type a name to continue.";
+        if (name.Length < 2) return "Name must be at least 2 characters.";
+        if (name.Length > 64) return "Name must be 64 characters or fewer.";
+        if (!char.IsLetter(name[0])) return "Name must start with a letter.";
+        foreach (var c in name)
+        {
+            if (!char.IsLetterOrDigit(c) && c != '_')
+                return $"Name can only contain letters, digits, and underscores. \"{c}\" isn't allowed.";
+        }
+        return null;
+    }
+
+    private void RefreshButton()
+    {
+        var nameError = ValidateName(TbName.Text);
+        TbNameHint.Text = nameError ?? "";
+        BtnCreate.IsEnabled = _preflightPassed && nameError == null;
+        BtnCreate.ToolTip = !_preflightPassed
+            ? "Pre-flight has errors — fix the red ✗ items above."
+            : nameError ?? "Click to create the mod and register it on Workshop.";
+    }
+
     private void TbName_TextChanged(object sender, TextChangedEventArgs e)
     {
-        BtnCreate.IsEnabled = _preflightPassed && IsNameValid();
+        RefreshButton();
         if (string.IsNullOrEmpty(TbTitle.Text) && IsNameValid())
             TbTitle.Text = ToTitleCase(TbName.Text.Trim());
     }

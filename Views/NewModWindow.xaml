@@ -46,8 +46,9 @@
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <TextBlock Text="Mod folder name" FontWeight="SemiBold"/>
-                <TextBlock Text="No spaces. Lowercase + underscores. e.g. my_first_mod" FontSize="11" Foreground="#9CDCFE"/>
+                <TextBlock Text="Letters, digits, underscores. Starts with a letter. e.g. MyFirstMod or my_first_mod" FontSize="11" Foreground="#9CDCFE"/>
                 <TextBox x:Name="TbName" TextChanged="TbName_TextChanged"/>
+                <TextBlock x:Name="TbNameHint" FontSize="11" Foreground="#F48771" Margin="0,-8,0,12" Text=""/>
 
                 <TextBlock Text="Workshop title (what players see)" FontWeight="SemiBold"/>
                 <TextBox x:Name="TbTitle"/>
