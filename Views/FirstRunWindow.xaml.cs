@@ -97,9 +97,9 @@ public partial class FirstRunWindow : Window
         switch (fixAction)
         {
             case "browse-vmb":
+                yield return ("Download VMB now", async () => await DownloadVmbAsync());
                 yield return ("Auto-detect", () => { var v = VmbLocator.AutoDetect(); if (v != null) Settings.VmbRoot = v.Root; Settings.Save(); });
                 yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick VMB folder" }; if (dlg.ShowDialog(this) == true) { Settings.VmbRoot = dlg.FolderName; Settings.Save(); } });
-                yield return ("Open VMB github", () => OpenUrl("https://github.com/Vermintide-Mod-Framework/Vermintide-Mod-Builder/releases"));
                 break;
             case "browse-project":
                 yield return ("Auto-detect", () => { var p = VmbProject.AutoDetect(Settings.VmbRoot); if (p != null) Settings.ProjectRoot = p.Root; Settings.Save(); });
@@ -146,6 +146,36 @@ public partial class FirstRunWindow : Window
     private static void OpenUrl(string url)
     {
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+    }
+
+    private CancellationTokenSource? _downloadCts;
+    private async Task DownloadVmbAsync()
+    {
+        if (_downloadCts != null) return;
+        _downloadCts = new CancellationTokenSource();
+        var dlg = new DownloadProgressWindow("Downloading VMB...") { Owner = this };
+        dlg.Cancelled += (_, _) => _downloadCts.Cancel();
+
+        var progress = new Progress<DownloadProgress>(p => dlg.Update(p));
+        var downloader = new VmbDownloader();
+
+        var task = downloader.DownloadAndInstallAsync(progress, _downloadCts.Token);
+        dlg.Show();
+        var result = await task;
+        dlg.Close();
+        _downloadCts.Dispose();
+        _downloadCts = null;
+
+        if (result.Ok && result.VmbRoot != null)
+        {
+            Settings.VmbRoot = result.VmbRoot;
+            Settings.Save();
+            MessageBox.Show(this, $"VMB installed at:\n{result.VmbRoot}\n\nClick Re-check everything to verify.", "VMB Launcher", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else
+        {
+            MessageBox.Show(this, result.Message, "VMB download failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void BtnRecheck_Click(object sender, RoutedEventArgs e) => Refresh();

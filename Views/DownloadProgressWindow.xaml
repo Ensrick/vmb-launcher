@@ -1,0 +1,22 @@
+<Window x:Class="VmbLauncher.Views.DownloadProgressWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Downloading" Width="480" Height="180"
+        Background="#1E1E1E" Foreground="#E0E0E0"
+        FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        ResizeMode="NoResize" WindowStyle="ToolWindow">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock x:Name="TbTitle" Grid.Row="0" Foreground="#E0E0E0" FontSize="15" FontWeight="SemiBold" Text="Downloading VMB..."/>
+        <TextBlock x:Name="TbStatus" Grid.Row="1" Foreground="#9CDCFE" Margin="0,8,0,8" Text=""/>
+        <ProgressBar x:Name="PbProgress" Grid.Row="2" Height="16" Minimum="0" Maximum="100" Foreground="#0E639C" Background="#2D2D30" BorderBrush="#3E3E42"/>
+        <Button Grid.Row="4" x:Name="BtnCancel" Content="Cancel" Click="BtnCancel_Click" HorizontalAlignment="Right" Padding="14,4" Background="#2D2D30" Foreground="#E0E0E0" BorderBrush="#3E3E42"/>
+    </Grid>
+</Window>

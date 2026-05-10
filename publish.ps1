@@ -15,6 +15,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+Write-Host "Running tests..." -ForegroundColor Cyan
+& "$root\test.ps1"
+
 Write-Host "Publishing VMBLauncher (self-contained, single-file, win-x64)..." -ForegroundColor Cyan
 Push-Location $root
 try {

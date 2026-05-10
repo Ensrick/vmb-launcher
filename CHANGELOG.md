@@ -1,5 +1,17 @@
 # VMB Launcher Changelog
 
+## v0.2.0 (2026-05-10)
+
+### Added
+- **Download VMB now** button in the first-run dialog. Pulls the latest release from `Vermintide-Mod-Framework/Vermintide-Mod-Builder` on GitHub, downloads the zip, extracts to `%LOCALAPPDATA%\VMBLauncher\vmb\`, and points the launcher at it. New users no longer need to grab VMB manually.
+- Progress dialog with cancel button during VMB download.
+- xUnit test project (`tests/VmbLauncher.Tests.csproj`) covering 64 tests across `VmbProject`, `VmbLocator`, `ModDiscovery` (parser + writer), `Settings`, `Diagnostics`, `VmbDownloader` (with mocked HTTP via `HttpMessageHandler`), `ProcessRunner`, and `HashFile`.
+- `test.ps1` runs the suite headlessly. `publish.ps1` now runs tests before building the exe.
+- `VmbProject.AutoDetect` accepts an optional `extraCandidates` enumerable so tests can disable the disk scan.
+
+### Removed
+- "Open Workshop Page" per-mod button. Subscribing through Steam is the same number of clicks and works without a browser.
+
 ## v0.1.0 (2026-05-10)
 
 First release. A friendly Windows GUI for the Vermintide 2 mod build / deploy / upload pipeline.

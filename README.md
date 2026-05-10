@@ -49,11 +49,20 @@ cd vmb-launcher
 .\publish.ps1
 ```
 
-Output: `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe`. About 60 MB.
+`publish.ps1` runs the test suite first, then builds. Output: `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe` (~60 MB).
 
 For development:
 ```powershell
-dotnet run -c Debug
+dotnet run -c Debug   # launch the GUI in debug mode
+.\test.ps1            # run xUnit tests headlessly
+```
+
+### Tests
+
+64 tests across all service classes. The downloader is fully tested with a mocked `HttpMessageHandler`, so it never hits the live GitHub API in CI.
+
+```powershell
+.\test.ps1
 ```
 
 ## Settings file location

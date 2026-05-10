@@ -56,7 +56,8 @@ public sealed class VmbProject
     }
 
     /// <summary>Search common locations for a directory containing .vmbrc.</summary>
-    public static VmbProject? AutoDetect(string? vmbRootHint)
+    /// <param name="extraCandidates">Optional override for the candidate-path scan (defaults to common repo locations). Tests pass an empty enumerable to disable disk scan.</param>
+    public static VmbProject? AutoDetect(string? vmbRootHint, IEnumerable<string>? extraCandidates = null)
     {
         // 1. VMB root itself (standard layout).
         if (!string.IsNullOrEmpty(vmbRootHint))
@@ -66,7 +67,7 @@ public sealed class VmbProject
         }
 
         // 2. Common paths with --cwd projects.
-        foreach (var guess in EnumerateCandidates())
+        foreach (var guess in extraCandidates ?? EnumerateCandidates())
         {
             try
             {
