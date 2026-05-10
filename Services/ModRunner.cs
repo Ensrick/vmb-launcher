@@ -111,7 +111,9 @@ public sealed class ModRunner
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
 
         L($"[upload] {mod.Name}");
-        var result = await ProcessRunner.RunWithEulaYesAsync(_settings.UgcToolPath!, new[] { "-c", mod.ItemCfgPath, "-x" }, L, ct);
+        // Run from the mod folder so ugc_tool resolves content="bundleV2" against the right cwd.
+        // (Despite the SDK README, ugc_tool uses cwd, not cfg location, for relative path lookup.)
+        var result = await ProcessRunner.RunWithEulaYesAsync(_settings.UgcToolPath!, new[] { "-c", mod.ItemCfgPath, "-x" }, mod.ModDir, L, ct);
         if (result.ExitCode != 0)
             return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
 

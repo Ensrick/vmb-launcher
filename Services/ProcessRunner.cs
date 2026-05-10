@@ -128,7 +128,17 @@ public static class ProcessRunner
         }
     }
 
-    /// <summary>Run a tool with "y\n" piped to its stdin. Used for ugc_tool's EULA prompt.</summary>
-    public static Task<ProcessResult> RunWithEulaYesAsync(string toolPath, IEnumerable<string> toolArgs, Action<string>? onLine, CancellationToken ct = default)
-        => RunAsync(toolPath, toolArgs, System.IO.Path.GetDirectoryName(toolPath), onLine, "y\n", ct);
+    /// <summary>
+    /// Run a tool with "y\n" piped to its stdin. Used for ugc_tool's EULA prompt.
+    /// </summary>
+    /// <remarks>
+    /// Caller MUST pass the right <paramref name="workingDir"/> for ugc_tool. Despite what the
+    /// SDK README claims, ugc_tool resolves the cfg's <c>content = "..."</c> relative path
+    /// against the process cwd, not against the cfg file location. Passing the cfg's directory
+    /// (the mod folder) makes <c>content = "bundleV2"</c> resolve correctly. Passing the
+    /// uploader's own folder produces "generic failure (probably empty content directory)" 0x2
+    /// on first upload. See ModRunner.UploadAsync for the production call site.
+    /// </remarks>
+    public static Task<ProcessResult> RunWithEulaYesAsync(string toolPath, IEnumerable<string> toolArgs, string? workingDir, Action<string>? onLine, CancellationToken ct = default)
+        => RunAsync(toolPath, toolArgs, workingDir, onLine, "y\n", ct);
 }

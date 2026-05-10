@@ -1,5 +1,14 @@
 # VMB Launcher Changelog
 
+## v0.2.4 (2026-05-10)
+
+### Fixed
+- **Upload failed with `"generic failure (probably empty content directory)" (0x2)`** even after a successful build that produced bundles in `bundleV2/`. Root cause: ugc_tool resolves the `content = "bundleV2"` relative path in `itemV2.cfg` against its **process working directory**, NOT against the cfg file location (despite what the SDK README claims). The launcher was running ugc_tool with cwd = `<sdk>/ugc_uploader/`, so it looked for `bundleV2/` inside the uploader folder and found nothing.
+- Fix: run ugc_tool with cwd = the mod folder (where `itemV2.cfg` and `bundleV2/` actually live). First uploads of brand-new mods now succeed cleanly. Documented in tweaker repo's DEVELOPMENT.md and `feedback_workshop_upload_verify.md` — converting that institutional knowledge into a permanent code fix.
+
+### Tests
+- Total still 108, all passing. The cwd choice is verified through the production call site in `ModRunner.UploadAsync` (now passes `mod.ModDir`); a deeper integration test would require spawning a real ugc_tool with a real Steamworks session and is out of scope.
+
 ## v0.2.3 (2026-05-10)
 
 ### Fixed
