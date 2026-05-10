@@ -1,5 +1,14 @@
 # VMB Launcher Changelog
 
+## v0.2.3 (2026-05-10)
+
+### Fixed
+- **Log pane corruption** when the Stingray compiler emitted bare `\r` for progress overwrites. The old `BeginOutputReadLine` treated `\r` as a line terminator, producing `[C\nompiler]`-style splits and worse one-character-per-line breakage on heavy output. Replaced with a custom async character reader that only splits on `\n`, strips trailing `\r` for CRLF, and locks the per-line callback so stdout/stderr never interleave at sub-line granularity.
+- 9 new tests targeting the specific failure modes: bare `\r` mid-line, CRLF, LF-only, no trailing newline, empty input, progress-overwrite collapse, single-byte chunked reads, and end-to-end with `powershell.exe` writing `\r` between two words.
+
+### Tests
+- Total: 108 tests, all passing (was 99).
+
 ## v0.2.2 (2026-05-10)
 
 ### Fixed
