@@ -1,5 +1,10 @@
 # VMB Launcher Changelog
 
+## v0.2.9 (2026-05-10)
+
+### Fixed
+- **New Mod dialog visibility dropdown was unreadable** — the dropdown items used Windows' default styling on hover/select, which paired our light-gray foreground with Windows' default white selection background. Added an explicit `ComboBoxItem` style that keeps the dark theme through hover, selection, and the highlighted state.
+
 ## v0.2.8 (2026-05-10)
 
 ### Fixed
