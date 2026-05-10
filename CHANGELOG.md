@@ -1,5 +1,16 @@
 # VMB Launcher Changelog
 
+## v0.2.11 (2026-05-10)
+
+### Changed
+- **Replaced the Visibility ComboBox with three radio buttons.** v0.2.9 and v0.2.10 attempted to dark-theme the dropdown via ComboBoxItem styles and SystemColors overrides — both failed because WPF's default ComboBox popup uses theme-specific brushes that those approaches don't reach. Radios sidestep the issue entirely, plus all three options stay visible at once instead of being hidden behind a dropdown click (better UX for a 3-choice picker).
+- Public radio button text is colored `#F48771` (warm orange) to reinforce the "this can't be undone if reported" warning right next to the option.
+
+## v0.2.10 (2026-05-10)
+
+### Fixed
+- **Visibility dropdown still rendered with white popup background** after v0.2.9. The `ComboBoxItem` style alone wasn't enough — WPF's default `ComboBox` template uses `SystemColors` resources for the popup background, item highlight, and text. v0.2.10 overrides those resource keys at the `Window.Resources` level so the popup picks up the dark theme.
+
 ## v0.2.9 (2026-05-10)
 
 ### Fixed

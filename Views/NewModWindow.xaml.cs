@@ -110,7 +110,9 @@ public partial class NewModWindow : Window
         var name = TbName.Text.Trim();
         var title = string.IsNullOrWhiteSpace(TbTitle.Text) ? name : TbTitle.Text.Trim();
         var desc = TbDesc.Text;
-        var visibility = (CbVisibility.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "private";
+        string visibility = "private";
+        if (RbVisFriends.IsChecked == true) visibility = "friends";
+        else if (RbVisPublic.IsChecked == true) visibility = "public";
 
         if (visibility == "public")
         {

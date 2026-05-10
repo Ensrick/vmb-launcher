@@ -24,37 +24,6 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#E0E0E0"/>
         </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Background" Value="#252526"/>
-            <Setter Property="Foreground" Value="#E0E0E0"/>
-            <Setter Property="Padding" Value="8,4"/>
-            <Setter Property="Margin" Value="0,4,0,12"/>
-        </Style>
-        <!-- Force every ComboBoxItem (dropdown row) to use the dark theme. Without this, Windows
-             defaults take over for hover/selection: light-gray text on Windows' default white
-             selection background = unreadable. -->
-        <Style TargetType="ComboBoxItem">
-            <Setter Property="Background" Value="#252526"/>
-            <Setter Property="Foreground" Value="#E0E0E0"/>
-            <Setter Property="Padding" Value="10,6"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ComboBoxItem">
-                        <Border x:Name="b" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#2A2A2D"/>
-                            </Trigger>
-                            <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#094771"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
     </Window.Resources>
     <Grid Margin="20">
         <Grid.RowDefinitions>
@@ -84,11 +53,17 @@
                 <TextBlock Text="Visibility" FontWeight="SemiBold"/>
                 <TextBlock Text="Stay on Private until you've tested in-game and you're ready to publish. Public mods that get reported are removed permanently — no take-backs."
                            FontSize="11" Foreground="#F48771" TextWrapping="Wrap"/>
-                <ComboBox x:Name="CbVisibility" SelectedIndex="0">
-                    <ComboBoxItem Content="private"/>
-                    <ComboBoxItem Content="friends"/>
-                    <ComboBoxItem Content="public"/>
-                </ComboBox>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,12">
+                    <RadioButton x:Name="RbVisPrivate" GroupName="Visibility" Content="Private" IsChecked="True"
+                                 Foreground="#E0E0E0" Margin="0,0,18,0" Padding="6,0,0,0"
+                                 ToolTip="Only visible to you and admins. Recommended default."/>
+                    <RadioButton x:Name="RbVisFriends" GroupName="Visibility" Content="Friends"
+                                 Foreground="#E0E0E0" Margin="0,0,18,0" Padding="6,0,0,0"
+                                 ToolTip="Visible to you and your Steam friends."/>
+                    <RadioButton x:Name="RbVisPublic" GroupName="Visibility" Content="Public"
+                                 Foreground="#F48771" Padding="6,0,0,0"
+                                 ToolTip="Visible to everyone. Cannot be undone if reported — be sure."/>
+                </StackPanel>
 
                 <Border Background="#252526" Padding="10" CornerRadius="3" Margin="0,8,0,0">
                     <StackPanel>

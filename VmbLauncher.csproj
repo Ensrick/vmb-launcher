@@ -9,12 +9,12 @@
     <AssemblyName>VMBLauncher</AssemblyName>
     <RootNamespace>VmbLauncher</RootNamespace>
     <ApplicationIcon></ApplicationIcon>
-    <Version>0.2.9</Version>
+    <Version>0.2.11</Version>
     <Company>danjo</Company>
     <Product>VMB Launcher</Product>
     <AssemblyTitle>VMB Launcher</AssemblyTitle>
-    <FileVersion>0.2.9.0</FileVersion>
-    <InformationalVersion>0.2.9</InformationalVersion>
+    <FileVersion>0.2.11.0</FileVersion>
+    <InformationalVersion>0.2.11</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
