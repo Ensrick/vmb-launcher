@@ -120,89 +120,46 @@ public partial class NewModWindow : Window
             if (r != MessageBoxResult.Yes) return;
         }
 
-        var modDir = Path.Combine(vmb.ModsDir, name);
+        var project = VmbProject.Resolve(_settings.ProjectRoot) ?? VmbProject.Resolve(_settings.VmbRoot);
+        if (project == null) { MessageBox.Show(this, "Project folder not configured.", "VMB Launcher"); return; }
+
+        var modDir = Path.Combine(project.ModsDir, name);
         if (Directory.Exists(modDir))
         {
-            MessageBox.Show(this, $"A folder named \"{name}\" already exists in {vmb.ModsDir}. Pick a different name.", "VMB Launcher", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, $"A folder named \"{name}\" already exists in {project.ModsDir}. Pick a different name.", "VMB Launcher", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         BtnCreate.IsEnabled = false;
         BtnCancel.IsEnabled = false;
-        TbBusy.Text = "Creating mod (this can take 10-30 seconds)...";
+        TbBusy.Text = "Scaffolding mod...";
 
         try
         {
-            // Build the vmb create command.
-            var args = new List<string>();
-            if (vmb.Flavor == VmbFlavor.NodeScript) args.Add(vmb.Executable);
-            args.AddRange(new[] { "create", name, "-t", title, "-v", visibility });
-            if (!string.IsNullOrEmpty(desc))
+            // We deliberately do NOT shell out to `vmb create`. VMB v1.8.4's create.js calls the
+            // uploader immediately on a freshly-scaffolded mod with an empty bundleV2/, ugc_tool
+            // refuses with "empty content directory", and VMB then deletes the scaffold. See
+            // ModScaffolder.cs for full reasoning. The user registers on Workshop later via
+            // Build → Upload — ugc_tool creates the Workshop entry on first upload when the
+            // itemV2.cfg has no published_id.
+            _log($"[create] scaffolding {name} (visibility={visibility})");
+            var req = new ModScaffoldRequest(name, title, desc, visibility);
+            var result = await Task.Run(() => ModScaffolder.Scaffold(vmb, project, req));
+
+            if (!result.Ok)
             {
-                args.Add("-d");
-                args.Add(desc);
+                _log($"[create] FAILED: {result.Message}");
+                MessageBox.Show(this, result.Message, "Scaffold failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
             }
 
-            var fileName = vmb.Flavor == VmbFlavor.Binary ? vmb.Executable : (vmb.NodePath ?? "node.exe");
-
-            _log($"[create] {name} (visibility={visibility})");
-            var result = await ProcessRunner.RunAsync(fileName, args, vmb.Root, _log);
-
-            if (result.ExitCode != 0)
-            {
-                _log($"[create] FAILED with exit code {result.ExitCode}");
-
-                // VMB's create.js deletes the scaffold on upload failure. Rebuild it manually so the user
-                // doesn't lose their work and can fix Steam/SDK issues without losing edits.
-                if (!Directory.Exists(modDir))
-                {
-                    _log("[create] VMB deleted the scaffold after a failed Workshop registration. Rebuilding it locally...");
-                    ScaffoldOffline(vmb, name, title, desc, visibility, modDir);
-                    MessageBox.Show(this,
-                        "VMB couldn't register the mod with Steam Workshop, so it deleted the scaffold.\n\n" +
-                        "I rebuilt your mod folder locally with itemV2.cfg ready, but it has no Workshop ID yet — you'll need to upload manually once Steam is happy.\n\n" +
-                        "Most common causes:\n" +
-                        "  • Steam wasn't running\n" +
-                        "  • You don't own VT2 on this account\n" +
-                        "  • ugc_tool.exe was missing\n\n" +
-                        "Fix that, then click Upload on this mod from the main window.",
-                        "Workshop registration failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-                else
-                {
-                    MessageBox.Show(this, $"VMB create failed with exit code {result.ExitCode}. Check the log.", "VMB Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-            }
-            else
-            {
-                _log($"[create] OK -- mod scaffolded at {modDir}");
-
-                // Try to extract published_id from itemV2.cfg.
-                var cfgPath = Path.Combine(modDir, "itemV2.cfg");
-                string? id = null;
-                if (File.Exists(cfgPath))
-                {
-                    id = ModDiscovery.ExtractPublishedId(File.ReadAllText(cfgPath));
-                }
-
-                if (!string.IsNullOrEmpty(id))
-                {
-                    _log($"[create] Workshop ID: {id}");
-                    var r = MessageBox.Show(this,
-                        $"Mod created and registered on Steam Workshop (id {id}).\n\n" +
-                        "Steam doesn't auto-subscribe to your own uploads. Click Yes to open the Workshop page now and subscribe (required so Steam creates the local folder we deploy into).",
-                        "Subscribe to your mod",
-                        MessageBoxButton.YesNo, MessageBoxImage.Information);
-                    if (r == MessageBoxResult.Yes)
-                    {
-                        try
-                        {
-                            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"steam://url/CommunityFilePage/{id}") { UseShellExecute = true });
-                        }
-                        catch (Exception ex) { _log($"[create] couldn't open Steam URL: {ex.Message}"); }
-                    }
-                }
-            }
+            _log($"[create] OK -- {modDir}");
+            MessageBox.Show(this,
+                $"Scaffolded {name} at:\n{modDir}\n\n" +
+                "To register the mod on Steam Workshop, edit your scripts, then click " +
+                "Build → Upload from the main window. Steam Workshop will create a new " +
+                "entry on the first successful upload and write its ID back into itemV2.cfg.",
+                "Mod scaffolded", MessageBoxButton.OK, MessageBoxImage.Information);
 
             DialogResult = true;
             Close();
@@ -220,35 +177,4 @@ public partial class NewModWindow : Window
         }
     }
 
-    private static void ScaffoldOffline(VmbInstall vmb, string name, string title, string desc, string visibility, string modDir)
-    {
-        Directory.CreateDirectory(modDir);
-        Directory.CreateDirectory(Path.Combine(modDir, "scripts", "mods", name));
-        Directory.CreateDirectory(Path.Combine(modDir, "resource_packages", name));
-
-        var cfg = new System.Text.StringBuilder();
-        cfg.AppendLine($"title = \"{Esc(title)}\";");
-        cfg.AppendLine($"description = \"{Esc(desc)}\";");
-        cfg.AppendLine("preview = \"item_preview.png\";");
-        cfg.AppendLine("content = \"bundleV2\";");
-        cfg.AppendLine("language = \"english\";");
-        cfg.AppendLine($"visibility = \"{visibility}\";");
-        cfg.AppendLine("apply_for_sanctioned_status = false;");
-        cfg.AppendLine("tags = [ ];");
-        File.WriteAllText(Path.Combine(modDir, "itemV2.cfg"), cfg.ToString());
-
-        var modFile = $"return new_mod(\"{name}\", {{\n    mod_script       = \"scripts/mods/{name}/{name}\",\n    mod_data         = \"scripts/mods/{name}/{name}_data\",\n    mod_localization = \"scripts/mods/{name}/{name}_localization\",\n}})\n";
-        File.WriteAllText(Path.Combine(modDir, $"{name}.mod"), modFile);
-
-        File.WriteAllText(Path.Combine(modDir, "scripts", "mods", name, $"{name}.lua"),
-            $"local mod = get_mod(\"{name}\")\n\nmod:info(\"{name} loaded\")\n");
-        File.WriteAllText(Path.Combine(modDir, "scripts", "mods", name, $"{name}_data.lua"),
-            $"local mod = get_mod(\"{name}\")\nreturn {{\n    name = \"{Esc(title)}\",\n    description = mod:localize(\"{name}_description\"),\n    is_togglable = true,\n}}\n");
-        File.WriteAllText(Path.Combine(modDir, "scripts", "mods", name, $"{name}_localization.lua"),
-            $"return {{\n    {name}_description = {{ en = \"{Esc(title)}\" }},\n}}\n");
-        File.WriteAllText(Path.Combine(modDir, "resource_packages", name, $"{name}.package"),
-            $"resources = [\n    \"scripts/mods/{name}/{name}\"\n    \"scripts/mods/{name}/{name}_data\"\n    \"scripts/mods/{name}/{name}_localization\"\n]\n");
-    }
-
-    private static string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
 }

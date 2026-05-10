@@ -1,5 +1,17 @@
 # VMB Launcher Changelog
 
+## v0.2.2 (2026-05-10)
+
+### Fixed
+- **"Workshop registration failed" on every new mod.** VMB v1.8.4's `vmb create` calls the uploader immediately on a freshly-scaffolded mod with an empty `bundleV2/`, ugc_tool refuses with `"generic failure (probably empty content directory)"`, and VMB then deletes the entire scaffold. The launcher now bypasses `vmb create` entirely and scaffolds the mod itself by copying VMB's `.template-vmf/` folder with `%%name` / `%%title` / `%%description` substitution. The user registers on Workshop later via Build → Upload (ugc_tool creates the entry on first upload when `itemV2.cfg` has no `published_id`).
+- The "Workshop registration failed, scaffold rebuilt locally" recovery dialog is gone — there's nothing to recover from now. New dialog: *"Scaffolded MyMod at … To register the mod on Steam Workshop, click Build → Upload."*
+
+### Added
+- `ModScaffolder` service. Pure logic, fully tested (15 new test cases): finds the right template folder, copies + substitutes recursively, treats binary files (`.png`, `.dds`, `.jpg`) as binary, escapes quotes/newlines for Lua and itemV2.cfg formats, fails cleanly on duplicate folders or missing template.
+
+### Tests
+- Total: 99 tests, all passing (was 84).
+
 ## v0.2.1 (2026-05-10)
 
 ### Fixed
