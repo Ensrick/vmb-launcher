@@ -111,23 +111,20 @@ public sealed class ModRunner
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
 
         L($"[upload] {mod.Name}");
-        // Stage the mod into <sdk>/ugc_uploader/vmblauncher_staging/. This matches the
-        // SDK's own upload.bat pattern (ugc_tool -c sample_item/item.cfg from inside ugc_uploader)
-        // and is the documented fix for "generic failure (probably empty content directory)" 0x2
-        // in vermintide-2-tweaker/DEVELOPMENT.md. ugc_tool's path resolution for the cfg's
-        // content/preview fields is unreliable when the cfg lives outside the uploader's own dir
-        // tree — staging eliminates that brittleness.
+        // Stage the mod into <sdk>/ugc_uploader/sample_item/ and invoke ugc_tool from the
+        // ugc_uploader directory with a relative cfg path — verbatim match for the SDK's own
+        // upload.bat ("ugc_tool -c sample_item/item.cfg") and for the maintainer's legacy
+        // old-backup/upload.ps1. Custom staging folders + absolute cfg paths (v0.2.6) produce
+        // "generic failure (probably empty content directory)" 0x2 on at least one user's setup.
         StagedUpload staged;
         try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
         catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
         L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");
 
-        // Run ugc_tool with forward-slash paths and cwd = staging folder so its relative
-        // content="content" / preview="..." paths resolve correctly.
         var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
-        var cfgFwd = staged.CfgPath.Replace('\\', '/');
-        var stagingFwd = staged.StagingDir.Replace('\\', '/');
-        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", cfgFwd, "-x" }, stagingFwd, L, ct);
+        var uploaderDir = Path.GetDirectoryName(_settings.UgcToolPath!)!.Replace('\\', '/');
+        var relativeCfgArg = $"{UploadStager.StagingFolderName}/{UploadStager.StagedCfgFileName}";
+        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", relativeCfgArg, "-x" }, uploaderDir, L, ct);
         if (result.ExitCode != 0)
             return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
 

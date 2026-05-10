@@ -20,7 +20,17 @@ public sealed record StagedUpload(string StagingDir, string CfgPath, int FilesCo
 /// </summary>
 public static class UploadStager
 {
-    public const string StagingFolderName = "vmblauncher_staging";
+    // The SDK's own sample_item folder. Empirically what ugc_tool wants — likely because the
+    // tool has the name hardcoded in its content-resolution path, or because it only resolves
+    // relative cfg paths and "sample_item/item.cfg" is what its own upload.bat ships. Custom
+    // staging folder names (we tried "vmblauncher_staging" in v0.2.6) failed on at least one
+    // user's setup with "generic failure (probably empty content directory)" 0x2 despite the
+    // staging directory being a sibling of sample_item. The maintainer's pre-VMB-migration
+    // upload.ps1 used this folder; converging on the same.
+    public const string StagingFolderName = "sample_item";
+
+    // ugc_tool's bundled upload.bat uses "item.cfg" (not "itemV2.cfg"). Match it.
+    public const string StagedCfgFileName = "item.cfg";
 
     public static string GetStagingDir(string ugcUploaderDir)
         => Path.Combine(ugcUploaderDir, StagingFolderName);
@@ -67,8 +77,8 @@ public static class UploadStager
             }
         }
 
-        // Write the staged cfg with relative paths.
-        var stagedCfgPath = Path.Combine(stagingDir, "itemV2.cfg");
+        // Write the staged cfg with relative paths. Filename matches the SDK's convention.
+        var stagedCfgPath = Path.Combine(stagingDir, StagedCfgFileName);
         WriteStagedCfg(stagedCfgPath, mod, stagedPreviewName);
 
         return new StagedUpload(stagingDir, stagedCfgPath, copied);

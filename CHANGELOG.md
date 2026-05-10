@@ -1,5 +1,18 @@
 # VMB Launcher Changelog
 
+## v0.2.7 (2026-05-10)
+
+### Fixed
+- v0.2.6's staging used a custom folder (`vmblauncher_staging/`) and an absolute cfg path. That worked on the maintainer's machine but **still failed on at least one friend's setup** with the same `"generic failure (probably empty content directory)" (0x2)` error. v0.2.7 matches the SDK's own `upload.bat` and the maintainer's legacy `old-backup/upload.ps1` verbatim:
+  - Stage into `<sdk>/ugc_uploader/sample_item/` (the SDK's own designated staging folder, not a custom subfolder)
+  - Write the cfg as `item.cfg` (not `itemV2.cfg`)
+  - Invoke ugc_tool from `<sdk>/ugc_uploader/` (cwd = uploader dir, not staging dir)
+  - Pass cfg as relative path: `-c sample_item/item.cfg` (not the absolute path)
+- Plausible mechanism: ugc_tool likely has the literal string `sample_item` hardcoded somewhere in its content-resolution path, or its argv parser only resolves relative cfg paths cleanly. Either way, this matches what the SDK ships and what the maintainer's pre-VMB-migration scripts used reliably.
+
+### Note
+This overwrites your existing `<sdk>/ugc_uploader/sample_item/` contents on each upload. That folder is the SDK's designated scratch area; the legacy `upload.ps1` did the same.
+
 ## v0.2.6 (2026-05-10)
 
 ### Fixed

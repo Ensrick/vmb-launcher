@@ -197,6 +197,6 @@ public class UploadStagerTests
     public void GetStagingDir_lives_under_uploader_folder()
     {
         var dir = UploadStager.GetStagingDir(@"C:\sdk\ugc_uploader");
-        Assert.Equal(@"C:\sdk\ugc_uploader\vmblauncher_staging", dir);
+        Assert.Equal(@"C:\sdk\ugc_uploader\sample_item", dir);
     }
 }
