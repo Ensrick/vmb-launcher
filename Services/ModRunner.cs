@@ -111,9 +111,15 @@ public sealed class ModRunner
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
 
         L($"[upload] {mod.Name}");
-        // Run from the mod folder so ugc_tool resolves content="bundleV2" against the right cwd.
-        // (Despite the SDK README, ugc_tool uses cwd, not cfg location, for relative path lookup.)
-        var result = await ProcessRunner.RunWithEulaYesAsync(_settings.UgcToolPath!, new[] { "-c", mod.ItemCfgPath, "-x" }, mod.ModDir, L, ct);
+        // ugc_tool's internal path parsing for "resolve content relative to cfg location" is
+        // forward-slash-only — pass a backslash path and its dirname() returns the wrong directory,
+        // producing "generic failure (probably empty content directory)" 0x2. The maintainer's
+        // working upload_ct.ps1 / upload_wt.ps1 in vermintide-2-tweaker/ do the same conversion via
+        // `-replace '\\','/'` for exactly this reason. VMB emits forward slashes throughout for the
+        // same reason (Stingray + ugc_tool are a Linux-flavored toolchain).
+        var cfgFwd = mod.ItemCfgPath.Replace('\\', '/');
+        var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
+        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", cfgFwd, "-x" }, mod.ModDir, L, ct);
         if (result.ExitCode != 0)
             return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
 

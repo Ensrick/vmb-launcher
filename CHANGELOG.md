@@ -1,5 +1,12 @@
 # VMB Launcher Changelog
 
+## v0.2.5 (2026-05-10)
+
+### Fixed
+- **Real cause of `"generic failure (probably empty content directory)" (0x2)`:** ugc_tool's internal path parsing for "resolve `content` relative to cfg location" is **forward-slash-only**. Passing a Windows backslash path makes its `dirname()` return the wrong directory, so it looks for `bundleV2/` in the wrong place. The maintainer's existing `upload_ct.ps1` / `upload_wt.ps1` already did the same conversion via `-replace '\\','/'` for exactly this reason — institutional knowledge the launcher hadn't yet absorbed. VMB also emits forward slashes throughout (Stingray + ugc_tool are a Linux-flavored toolchain).
+- Fix: convert both ugc_tool exe path and cfg path to forward slashes before invoking.
+- The v0.2.4 cwd change (mod folder instead of `ugc_uploader/`) is kept since it doesn't hurt and is more explicit, but it wasn't the real cause.
+
 ## v0.2.4 (2026-05-10)
 
 ### Fixed
