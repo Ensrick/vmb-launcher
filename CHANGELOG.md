@@ -1,5 +1,24 @@
 # VMB Launcher Changelog
 
+## v0.2.6 (2026-05-10)
+
+### Fixed
+- **Uploads now use SDK staging**, matching the maintainer's existing documented fix in `vermintide-2-tweaker/DEVELOPMENT.md` for `"generic failure (probably empty content directory)" (0x2)`. Despite VMB's design claim, ugc_tool's relative-path resolution for `content` / `preview` is unreliable when the cfg lives outside the SDK uploader's own directory tree. Staging into `<sdk>/ugc_uploader/vmblauncher_staging/` with relative paths in the staged cfg matches what the SDK's own `upload.bat` does (`ugc_tool -c sample_item/item.cfg`) and is the empirically reliable pattern.
+- Per upload, the launcher now:
+  1. Wipes and recreates `vmblauncher_staging/content/`
+  2. Copies `<mod>/bundleV2/*` into `staging/content/`
+  3. Copies the mod's preview image into `staging/`
+  4. Writes a derived `itemV2.cfg` with relative `content="content"` and the right preview filename, preserving `published_id` if set
+  5. Runs `ugc_tool -c staging/itemV2.cfg -x` with cwd = staging folder
+  6. After success, reads back any newly-written `published_id` from the staged cfg and propagates it into the mod's actual `itemV2.cfg` so future uploads target the same Workshop item
+
+### Tests
+- 15 new `UploadStager` tests covering: staging folder creation, bundle copy, preview detection (item_preview.png / preview.jpg / preview.png fallback), staged cfg shape, `published_id` upsert (replace, insert, append), back-propagation logic, missing-bundle guard, staging wipe on re-stage.
+- Total: 123 tests, all passing.
+
+### Note
+This release supersedes v0.2.4 (cwd change) and v0.2.5 (forward-slash paths) — both were partial-credit theories. Staging is what the maintainer's existing tweaker docs already documented as the working fix.
+
 ## v0.2.5 (2026-05-10)
 
 ### Fixed

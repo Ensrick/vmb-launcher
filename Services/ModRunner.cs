@@ -111,17 +111,34 @@ public sealed class ModRunner
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
 
         L($"[upload] {mod.Name}");
-        // ugc_tool's internal path parsing for "resolve content relative to cfg location" is
-        // forward-slash-only — pass a backslash path and its dirname() returns the wrong directory,
-        // producing "generic failure (probably empty content directory)" 0x2. The maintainer's
-        // working upload_ct.ps1 / upload_wt.ps1 in vermintide-2-tweaker/ do the same conversion via
-        // `-replace '\\','/'` for exactly this reason. VMB emits forward slashes throughout for the
-        // same reason (Stingray + ugc_tool are a Linux-flavored toolchain).
-        var cfgFwd = mod.ItemCfgPath.Replace('\\', '/');
+        // Stage the mod into <sdk>/ugc_uploader/vmblauncher_staging/. This matches the
+        // SDK's own upload.bat pattern (ugc_tool -c sample_item/item.cfg from inside ugc_uploader)
+        // and is the documented fix for "generic failure (probably empty content directory)" 0x2
+        // in vermintide-2-tweaker/DEVELOPMENT.md. ugc_tool's path resolution for the cfg's
+        // content/preview fields is unreliable when the cfg lives outside the uploader's own dir
+        // tree — staging eliminates that brittleness.
+        StagedUpload staged;
+        try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
+        catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
+        L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");
+
+        // Run ugc_tool with forward-slash paths and cwd = staging folder so its relative
+        // content="content" / preview="..." paths resolve correctly.
         var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
-        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", cfgFwd, "-x" }, mod.ModDir, L, ct);
+        var cfgFwd = staged.CfgPath.Replace('\\', '/');
+        var stagingFwd = staged.StagingDir.Replace('\\', '/');
+        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", cfgFwd, "-x" }, stagingFwd, L, ct);
         if (result.ExitCode != 0)
             return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
+
+        // If this was a first upload, ugc_tool wrote the new published_id into the staged cfg.
+        // Propagate it back to the mod's actual cfg so subsequent uploads target the same item.
+        try
+        {
+            if (UploadStager.PropagatePublishedIdBack(staged, mod))
+                L("[upload] new Workshop ID written back into your mod's itemV2.cfg");
+        }
+        catch (Exception ex) { L($"[upload] WARNING: couldn't propagate published_id: {ex.Message}"); }
 
         L("[upload] ugc_tool reported finished. VERIFY the Workshop page shows updated file size -- ugc_tool prints success even on transfer failures.");
         return new RunOutcome(true, "Upload finished (verify size on Workshop page)");
