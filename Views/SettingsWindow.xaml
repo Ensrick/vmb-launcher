@@ -1,0 +1,117 @@
+<Window x:Class="VmbLauncher.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings" Width="780" Height="600"
+        Background="#1E1E1E" Foreground="#E0E0E0"
+        FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#252526"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Settings" FontSize="22" FontWeight="SemiBold"/>
+        <TextBlock Grid.Row="1" Foreground="#9CDCFE" Margin="0,0,0,16" TextWrapping="Wrap"
+                   Text="Most of these are auto-detected. Override here only if Auto-detect picked the wrong path."/>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="VMB folder" FontWeight="SemiBold"/>
+                <TextBlock Text="Folder containing vmb.exe (or vmb.js + node.exe). The tool itself." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseVmb_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoVmb_Click"/>
+                    <TextBox x:Name="TbVmb"/>
+                </DockPanel>
+
+                <TextBlock Text="Project folder (where mods live)" FontWeight="SemiBold"/>
+                <TextBlock Text="Folder containing .vmbrc and your mod folders. Often the same as VMB folder; sometimes a separate repo (--cwd setup)." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseProject_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoProject_Click"/>
+                    <TextBox x:Name="TbProject"/>
+                </DockPanel>
+
+                <TextBlock Text="Steam install folder" FontWeight="SemiBold"/>
+                <TextBlock Text="Auto-detected via Windows registry. Only override if you have a non-default install." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseSteam_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoSteam_Click"/>
+                    <TextBox x:Name="TbSteam"/>
+                </DockPanel>
+
+                <TextBlock Text="Vermintide 2 SDK folder" FontWeight="SemiBold"/>
+                <TextBlock Text="Install the SDK via Steam: Library → Tools → 'Vermintide 2 SDK'." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseSdk_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoSdk_Click"/>
+                    <TextBox x:Name="TbSdk"/>
+                </DockPanel>
+
+                <TextBlock Text="ugc_tool.exe" FontWeight="SemiBold"/>
+                <TextBlock Text="Inside the SDK at ugc_uploader\ugc_tool.exe." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseTool_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoTool_Click"/>
+                    <TextBox x:Name="TbTool"/>
+                </DockPanel>
+
+                <TextBlock Text="Workshop content folder for VT2" FontWeight="SemiBold"/>
+                <TextBlock Text="Steam\steamapps\workshop\content\552500. Created automatically when you subscribe to a VT2 mod (your own counts)." FontSize="11" Foreground="#9CDCFE" Margin="0,0,0,4"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseWs_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoWs_Click"/>
+                    <TextBox x:Name="TbWs"/>
+                </DockPanel>
+
+                <TextBlock Text="Node.exe (only needed if VMB is the github clone, not the binary release)" FontWeight="SemiBold"/>
+                <DockPanel Margin="0,0,0,12">
+                    <Button DockPanel.Dock="Right" Content="Browse..." Click="BrowseNode_Click"/>
+                    <Button DockPanel.Dock="Right" Content="Auto-detect" Click="AutoNode_Click"/>
+                    <TextBox x:Name="TbNode"/>
+                </DockPanel>
+
+                <Border Background="#252526" Padding="10" CornerRadius="3">
+                    <StackPanel>
+                        <TextBlock Text="Diagnostics" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <TextBlock x:Name="TbDiag" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="12" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <DockPanel Grid.Row="3" Margin="0,12,0,0">
+            <Button DockPanel.Dock="Left" Content="Run all checks" Click="BtnTest_Click"/>
+            <Button DockPanel.Dock="Left" Content="Open settings file" Click="BtnOpenSettingsFile_Click"/>
+        </DockPanel>
+
+        <DockPanel Grid.Row="4" Margin="0,14,0,0">
+            <Button DockPanel.Dock="Right" Content="Cancel" Click="BtnCancel_Click"/>
+            <Button DockPanel.Dock="Right" Content="Save" Click="BtnSave_Click" Background="#0E639C" BorderBrush="#1177BB" Padding="20,5" Margin="0,0,8,0"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>

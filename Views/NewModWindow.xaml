@@ -1,0 +1,82 @@
+<Window x:Class="VmbLauncher.Views.NewModWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Create new mod" Width="640" Height="640"
+        Background="#1E1E1E" Foreground="#E0E0E0"
+        FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#252526"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Margin" Value="0,4,0,12"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#252526"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Margin" Value="0,4,0,12"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Create new VT2 mod" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock Grid.Row="1" Foreground="#9CDCFE" Margin="0,0,0,16" TextWrapping="Wrap"
+                   Text="VMB will scaffold a mod folder and create a private Workshop entry. The window stays open until everything is verified — if Workshop registration fails, your scaffold is restored automatically."/>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="Mod folder name" FontWeight="SemiBold"/>
+                <TextBlock Text="No spaces. Lowercase + underscores. e.g. my_first_mod" FontSize="11" Foreground="#9CDCFE"/>
+                <TextBox x:Name="TbName" TextChanged="TbName_TextChanged"/>
+
+                <TextBlock Text="Workshop title (what players see)" FontWeight="SemiBold"/>
+                <TextBox x:Name="TbTitle"/>
+
+                <TextBlock Text="Description" FontWeight="SemiBold"/>
+                <TextBox x:Name="TbDesc" AcceptsReturn="True" TextWrapping="Wrap" Height="120" VerticalScrollBarVisibility="Auto"/>
+
+                <TextBlock Text="Visibility" FontWeight="SemiBold"/>
+                <TextBlock Text="Stay on Private until you've tested in-game and you're ready to publish. Public mods that get reported are removed permanently — no take-backs."
+                           FontSize="11" Foreground="#F48771" TextWrapping="Wrap"/>
+                <ComboBox x:Name="CbVisibility" SelectedIndex="0">
+                    <ComboBoxItem Content="private"/>
+                    <ComboBoxItem Content="friends"/>
+                    <ComboBoxItem Content="public"/>
+                </ComboBox>
+
+                <Border Background="#252526" Padding="10" CornerRadius="3" Margin="0,8,0,0">
+                    <StackPanel>
+                        <TextBlock Text="Pre-flight" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <TextBlock x:Name="TbPreflight" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="12" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <DockPanel Grid.Row="3" Margin="0,14,0,0">
+            <Button DockPanel.Dock="Right" x:Name="BtnCancel" Content="Cancel" Click="BtnCancel_Click" Margin="0"/>
+            <Button DockPanel.Dock="Right" x:Name="BtnCreate" Content="Create mod" Click="BtnCreate_Click" Padding="20,8" Background="#0E639C" BorderBrush="#1177BB" Margin="0,0,8,0" IsEnabled="False"/>
+            <TextBlock x:Name="TbBusy" VerticalAlignment="Center" Foreground="#9CDCFE"/>
+        </DockPanel>
+    </Grid>
+</Window>

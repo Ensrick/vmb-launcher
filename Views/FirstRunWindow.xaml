@@ -1,0 +1,45 @@
+<Window x:Class="VmbLauncher.Views.FirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VMB Launcher — First-time setup" Width="780" Height="640"
+        Background="#1E1E1E" Foreground="#E0E0E0"
+        FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="BorderBrush" Value="#3E3E42"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Welcome to VMB Launcher" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock Grid.Row="1" Foreground="#9CDCFE" Margin="0,4,0,18" TextWrapping="Wrap"
+                   Text="Let's verify your setup. Anything red needs fixing before you can build / upload mods. Anything yellow is OK for now but might bite you later. Click the fix buttons next to each item — most will work in one click."/>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="SpItems"/>
+        </ScrollViewer>
+
+        <DockPanel Grid.Row="3" Margin="0,16,0,0">
+            <Button DockPanel.Dock="Left" x:Name="BtnRecheck" Content="Re-check everything" Click="BtnRecheck_Click"/>
+            <Button DockPanel.Dock="Left" x:Name="BtnOpenSettings" Content="Open full settings" Click="BtnOpenSettings_Click"/>
+            <Button DockPanel.Dock="Right" x:Name="BtnContinue" Content="Looks good — let's go" Click="BtnContinue_Click" Padding="22,8" Background="#0E639C" BorderBrush="#1177BB" Margin="0"/>
+            <Button DockPanel.Dock="Right" x:Name="BtnSkip" Content="Skip (I'll fix it myself)" Click="BtnSkip_Click"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>
