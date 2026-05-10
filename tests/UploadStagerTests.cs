@@ -102,12 +102,25 @@ public class UploadStagerTests
     }
 
     [Fact]
-    public void Stage_omits_published_id_when_absent()
+    public void Stage_writes_published_id_0L_for_new_mods()
     {
+        // Per ANTIGRAVITY.md docs, new items need `published_id = 0L;` explicit.
+        // Omitting the line is NOT the same as 0L (causes 0x2 error on first upload).
         using var fake = new FakeSdk(publishedId: null);
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
         var raw = File.ReadAllText(staged.CfgPath);
-        Assert.DoesNotContain("published_id", raw);
+        Assert.Contains("published_id = 0L;", raw);
+    }
+
+    [Fact]
+    public void Stage_does_not_write_tags_line()
+    {
+        // Per ANTIGRAVITY.md docs, ugc_tool ADDS tags=[] itself after first successful upload.
+        // Pre-adding it manually breaks the upload's content step on first uploads.
+        using var fake = new FakeSdk();
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+        var raw = File.ReadAllText(staged.CfgPath);
+        Assert.DoesNotContain("tags", raw);
     }
 
     [Fact]
@@ -164,9 +177,10 @@ public class UploadStagerTests
     {
         using var fake = new FakeSdk(publishedId: null);
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
-        // Simulate ugc_tool writing a new id into the staged cfg.
+        // Simulate ugc_tool replacing our "published_id = 0L;" sentinel with the real id.
         var stagedRaw = File.ReadAllText(staged.CfgPath);
-        File.WriteAllText(staged.CfgPath, stagedRaw + "\npublished_id = 555L;\n");
+        var replaced = stagedRaw.Replace("published_id = 0L;", "published_id = 555L;");
+        File.WriteAllText(staged.CfgPath, replaced);
 
         var updated = UploadStager.PropagatePublishedIdBack(staged, fake.Mod);
         Assert.True(updated);
@@ -176,11 +190,12 @@ public class UploadStagerTests
     }
 
     [Fact]
-    public void PropagatePublishedIdBack_skips_when_no_id_in_staged()
+    public void PropagatePublishedIdBack_skips_when_staged_id_is_zero_sentinel()
     {
+        // After Stage() writes "published_id = 0L;" but before ugc_tool runs, propagation should
+        // be a no-op. The 0L is our sentinel for "ugc_tool hasn't created the workshop item yet".
         using var fake = new FakeSdk(publishedId: null);
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
-        // Staged cfg has no published_id (we didn't simulate ugc_tool writing one).
         Assert.False(UploadStager.PropagatePublishedIdBack(staged, fake.Mod));
     }
 

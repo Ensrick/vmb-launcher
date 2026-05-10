@@ -100,6 +100,9 @@ public static class ModScaffolder
 
     public static void WriteItemCfg(string modDir, ModScaffoldRequest req)
     {
+        // Don't write a tags line in the scaffold's cfg. ugc_tool adds it itself after a successful
+        // first upload. Pre-adding it causes "generic failure (probably empty content directory)"
+        // 0x2 on first upload. Documented in vermintide-2-tweaker/old-backup/ANTIGRAVITY.md:129.
         var sb = new StringBuilder();
         sb.AppendLine($"title = \"{EscapeForCfg(req.Title)}\";");
         sb.AppendLine($"description = \"{EscapeForCfg(req.Description)}\";");
@@ -108,7 +111,6 @@ public static class ModScaffolder
         sb.AppendLine("language = \"english\";");
         sb.AppendLine($"visibility = \"{req.Visibility}\";");
         sb.AppendLine("apply_for_sanctioned_status = false;");
-        sb.AppendLine("tags = [ ];");
         File.WriteAllText(Path.Combine(modDir, "itemV2.cfg"), sb.ToString());
     }
 

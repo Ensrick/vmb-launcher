@@ -84,13 +84,15 @@ public static class UploadStager
         return new StagedUpload(stagingDir, stagedCfgPath, copied);
     }
 
-    /// <summary>After a successful upload, propagate any newly-written published_id from the staged cfg back to the mod's real cfg.</summary>
+    /// <summary>After a successful upload, propagate any newly-written published_id from the staged cfg back to the mod's real cfg. Skips the sentinel "0" value (we write `published_id = 0L;` before first upload; ugc_tool replaces it with the real ID on success).</summary>
     public static bool PropagatePublishedIdBack(StagedUpload staged, ModInfo mod)
     {
         if (!File.Exists(staged.CfgPath)) return false;
         var stagedRaw = File.ReadAllText(staged.CfgPath);
         var stagedId = ModDiscovery.ExtractPublishedId(stagedRaw);
         if (string.IsNullOrEmpty(stagedId)) return false;
+        // 0 is our sentinel for "ugc_tool hasn't written a real id yet". Don't propagate it.
+        if (stagedId == "0") return false;
 
         // Update mod's cfg if it doesn't already have the same id.
         var modRaw = File.ReadAllText(mod.ItemCfgPath);
@@ -119,6 +121,13 @@ public static class UploadStager
 
     private static void WriteStagedCfg(string path, ModInfo mod, string previewName)
     {
+        // Per maintainer's old-backup/ANTIGRAVITY.md:129 — "The tool adds tags = [ ]; automatically
+        // after a successful upload — do NOT add it manually." Adding it pre-emptively breaks the
+        // upload's content-transfer step (causes the 0x2 "empty content directory" error on first
+        // uploads).
+        //
+        // Per ANTIGRAVITY.md:114 — "For a new item, set published_id = 0L; — the tool will populate
+        // it after creation." Omitting the line entirely is NOT the same as 0L.
         var sb = new StringBuilder();
         sb.AppendLine($"title = \"{EscapeForCfg(mod.Title)}\";");
         sb.AppendLine($"description = \"{EscapeForCfg(mod.Description)}\";");
@@ -126,10 +135,9 @@ public static class UploadStager
         sb.AppendLine("content = \"content\";");
         sb.AppendLine($"language = \"{mod.Language}\";");
         sb.AppendLine($"visibility = \"{mod.Visibility}\";");
-        if (!string.IsNullOrEmpty(mod.PublishedId))
-            sb.AppendLine($"published_id = {mod.PublishedId}L;");
+        var idForCfg = string.IsNullOrEmpty(mod.PublishedId) ? "0" : mod.PublishedId;
+        sb.AppendLine($"published_id = {idForCfg}L;");
         sb.AppendLine("apply_for_sanctioned_status = false;");
-        sb.AppendLine("tags = [ ];");
         File.WriteAllText(path, sb.ToString());
     }
 

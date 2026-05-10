@@ -1,5 +1,27 @@
 # VMB Launcher Changelog
 
+## v0.2.8 (2026-05-10)
+
+### Fixed
+The actual root cause for the `"generic failure (probably empty content directory)" (0x2)` error on first uploads. The fix was documented in the maintainer's own `old-backup/ANTIGRAVITY.md` all along (lines 114 and 129):
+
+> "The tool adds `tags = [ ];` automatically after a successful upload — **do NOT add it manually**."
+
+> "For a **new** item, set `published_id = 0L;` — the tool will populate it after creation."
+
+Our launcher was doing the opposite on both:
+- Writing `tags = [ ];` into both the scaffolded `itemV2.cfg` AND the staged upload cfg.
+- Omitting `published_id` entirely on new mods instead of writing `published_id = 0L;`.
+
+Fix:
+- `ModScaffolder.WriteItemCfg`: drops the `tags = [ ];` line. ugc_tool adds it itself after the first successful upload.
+- `UploadStager.WriteStagedCfg`: same drop, plus writes `published_id = 0L;` explicitly when the mod has no ID yet (was: omitted).
+- `UploadStager.PropagatePublishedIdBack`: skips when the staged ID is "0" — that's the sentinel before ugc_tool runs, not a real workshop ID.
+
+### Tests
+- Updated two tests to reflect the new behavior, added one for the no-tags rule.
+- Total: 124 tests, all passing.
+
 ## v0.2.7 (2026-05-10)
 
 ### Fixed
