@@ -41,6 +41,16 @@ if (-not (Test-Path $exe)) {
 $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host "OK -- $exe ($size MB)" -ForegroundColor Green
 
+# End-to-end headless smoke test against the freshly-built release binary. This catches
+# regressions the unit suite can't see (subsystem flag, FreeConsole timing, real VMB build
+# integration). Costs ~15s. Pass -SkipSmoke to bypass for quick iterations.
+$smoke = Join-Path $root 'tests\headless_smoke.ps1'
+if (Test-Path $smoke) {
+    Write-Host "Running headless smoke against published binary..." -ForegroundColor Cyan
+    & $smoke -Exe $exe
+    if ($LASTEXITCODE -ne 0) { throw "Headless smoke failed (exit $LASTEXITCODE)" }
+}
+
 if (-not $SkipOpen) {
     Start-Process explorer.exe "/select,`"$exe`""
 }

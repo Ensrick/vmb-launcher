@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <!-- OutputType=Exe (console subsystem) is required so headless invocations from
+         PowerShell/cmd see stdout/stderr through proper pipes. The GUI path calls
+         FreeConsole() before any WPF code runs (see Program.Main), which dismisses the
+         briefly-flashed console window. WinExe would suppress the flash but breaks
+         output capture from any shell that invokes the binary as a CLI. -->
+    <OutputType>Exe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -9,12 +14,15 @@
     <AssemblyName>VMBLauncher</AssemblyName>
     <RootNamespace>VmbLauncher</RootNamespace>
     <ApplicationIcon></ApplicationIcon>
-    <Version>0.2.11</Version>
+    <Version>0.3.0</Version>
     <Company>danjo</Company>
     <Product>VMB Launcher</Product>
     <AssemblyTitle>VMB Launcher</AssemblyTitle>
-    <FileVersion>0.2.11.0</FileVersion>
-    <InformationalVersion>0.2.11</InformationalVersion>
+    <FileVersion>0.3.0.0</FileVersion>
+    <InformationalVersion>0.3.0</InformationalVersion>
+    <!-- Custom entry point so headless mode can attach to the parent console
+         before WPF would otherwise allocate one. See Program.cs. -->
+    <StartupObject>VmbLauncher.Program</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +31,13 @@
     <ApplicationDefinition Remove="tests\**" />
     <None Remove="tests\**" />
     <Resource Remove="tests\**" />
+  </ItemGroup>
+
+  <!-- Demote App.xaml from ApplicationDefinition to Page so the WPF SDK stops
+       auto-generating a Main entry point that conflicts with Program.Main. -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(Configuration)'=='Release'">

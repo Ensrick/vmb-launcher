@@ -29,13 +29,20 @@ public sealed class Settings
         return Path.Combine(dir, "settings.json");
     }
 
-    public static Settings Load()
+    public static Settings Load() => Load(null);
+
+    /// <summary>
+    /// Load settings from <paramref name="explicitPath"/> if given, else from the default
+    /// %APPDATA%\VMBLauncher\settings.json location. Missing or unparseable files yield a
+    /// fresh defaulted instance with ConfigPath pointing at the requested path, so a
+    /// subsequent Save() writes there.
+    /// </summary>
+    public static Settings Load(string? explicitPath)
     {
-        var path = DefaultConfigPath();
+        var path = string.IsNullOrEmpty(explicitPath) ? DefaultConfigPath() : explicitPath;
         if (!File.Exists(path))
         {
-            var s = new Settings { ConfigPath = path };
-            return s;
+            return new Settings { ConfigPath = path };
         }
         try
         {

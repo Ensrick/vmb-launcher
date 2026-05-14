@@ -1,5 +1,36 @@
 # VMB Launcher Changelog
 
+## v0.3.0 (2026-05-14)
+
+### Known issue: silent upload failures via staging path
+
+Verified 2026-05-14 against `chaos_wastes_tweaker` (Workshop ID 3712929235): the staging pipeline (`UploadStager.Stage` → `sample_item/content/` → `item.cfg` with `content="content"`) reports `Upload finished` and exits 0, but the Workshop's `file_size` (per `ISteamRemoteStorage/GetPublishedFileDetails`) is unchanged. Suspected root cause: ugc_tool resolves the cfg's `content` field relative to cwd (= `<uploader>/`), not relative to the cfg's location, so it looks at the empty `<uploader>/content/` instead of `<uploader>/sample_item/content/` where the launcher actually placed the files.
+
+The headless `upload` and `all` verbs inherit this bug (same code path as the GUI's Upload button). Until it's fixed, prefer direct-call `.ps1` wrappers (e.g. `upload_ct.ps1` after 2026-05-14, which invokes ugc_tool with the mod's own `itemV2.cfg` and `content="bundleV2"`, no staging) and verify post-upload via the Steam Web API. See `CLAUDE.md` "Known issue" section for the full doctrine.
+
+`build`, `deploy`, `list`, `info`, `doctor`, and `help` are unaffected by this issue.
+
+### Added: Headless CLI mode
+
+`VMBLauncher.exe` now exposes the same build / deploy / upload pipeline as a verb-based CLI that streams to stdout/stderr and returns proper exit codes. Same binary as before — zero args or `--gui` launches the WPF window; any other args route to the CLI handler.
+
+Verbs: `list`, `info`, `doctor`, `build`, `deploy`, `upload`, `all`, `help`. Global flags: `--no-banner`, `--config <path>`, `--gui`. Exit codes: 0/1/2/3 (success / runtime fail / bad usage / preflight failed). Full reference in `CLAUDE.md`.
+
+Implementation:
+
+- `OutputType` changed from `WinExe` to `Exe` (console subsystem) so stdout/stderr are real pipes. The GUI path calls `FreeConsole()` immediately to dismiss the inherited console window before WPF spins up — no visible flash from explorer.exe launches.
+- New `Program.cs` is the entry point (`<StartupObject>VmbLauncher.Program</StartupObject>`); `App.xaml` demoted from `ApplicationDefinition` to `Page` so the WPF SDK stops auto-generating a competing `Main`.
+- `Settings.Load(string?)` overload accepts an alternate config path for `--config`.
+- Broken-pipe writes from truncating consumers (`| head`, etc.) are caught and treated as success.
+- `UTF-8` `OutputEncoding` set so mod descriptions with bullets / em-dashes survive non-UTF-8 terminals.
+
+Note for PowerShell users: piping the launcher's output through `Select-Object -First N` sets `$LASTEXITCODE = -1` even on success. This is a PowerShell pipeline-termination signal, not a launcher behaviour — cmd and bash see the real exit code. Workaround documented in `CLAUDE.md`.
+
+Testing:
+
+- Added `tests/headless_smoke.ps1` — end-to-end suite (35 assertions) exercising every verb, every error path, exit codes through cmd/bash, broken-pipe handling, settings auto-detect, `--config` flag, and GUI fallback. Runs automatically as part of `publish.ps1`.
+- 124 unit tests continue to pass unchanged.
+
 ## v0.2.11 (2026-05-10)
 
 ### Changed
