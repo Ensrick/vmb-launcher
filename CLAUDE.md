@@ -34,38 +34,13 @@ Global flags:
 
 ## Doctrine: when to use what
 
-### Default: prefer the launcher for everything EXCEPT `upload` of established mods
+### Default: prefer the launcher for everything
 
-| Verb | Recommendation |
-|------|---------------|
-| `list` / `info` / `doctor` | **Launcher.** Read-only, fast, no .ps1 equivalent. |
-| `build` | **Launcher.** Same as `vmb build <mod> --no-workshop --cwd`. |
-| `deploy` | **Launcher.** Adds hash verification the .ps1 wrappers don't have. |
-| `upload` | **Direct-call `.ps1` wrappers** (`upload_ct.ps1` style) until the staging path is fixed. See "Known issue" below. |
-| `all` | Avoid for now — its upload step inherits the staging bug. Run `build`+`deploy` via launcher, then `upload_<mod>.ps1`. |
+`VMBLauncher.exe` (headless or GUI) is the single source of truth for build / deploy / upload / list / info / doctor across all VT2 mods in this repo. The `.ps1` wrappers in the repo root (`upload_*.ps1`, `deploy_*.ps1`, `deploy_all.ps1`) are thin convenience wrappers around the launcher — they exist for muscle memory and exit cleanly with the launcher's exit code.
 
-### Known issue: silent upload failures via staging path (verified 2026-05-14)
+After every upload, **verify the Workshop page file size** before assuming the push transferred. `ugc_tool` is known to print `Upload finished` even when content didn't transfer (memory `feedback_workshop_upload_verify.md`). For public mods that's automatable via `ISteamRemoteStorage/GetPublishedFileDetails`; for `friends_only`/`private` items the public API returns blank fields, so you need to eyeball the Workshop page in Steam.
 
-The launcher's `UploadStager` stages files into `<SDK>/ugc_uploader/sample_item/content/` and writes a generated `item.cfg` with `content = "content"`. Empirically this **silently fails** for at least one established Workshop item (`chaos_wastes_tweaker`, 3712929235): `ugc_tool` prints `Upload finished` and exits 0, but the Workshop's `file_size` (via `ISteamRemoteStorage/GetPublishedFileDetails`) is unchanged.
-
-Suspected root cause: when ugc_tool runs from cwd=`<uploader>/` and the cfg says `content = "content"`, the resolver hits `<uploader>/content/` (which doesn't exist) instead of `<uploader>/sample_item/content/` (where the launcher actually placed the files). The README claims `content` is relative to the cfg location; in practice it appears to be cwd-relative.
-
-The user's `upload_ct.ps1` (and other `upload_*.ps1` scripts following the same pattern after 2026-05-14) work around this by **calling ugc_tool directly with the mod's own `itemV2.cfg`** (`content = "bundleV2"`, no staging), then verifying transfer via the Steam Web API.
-
-Until the staging path is fixed, treat `vmblauncher upload <mod>` and `vmblauncher all <mod>` as **suspect for established mods**. Always verify file_size via the Web API after any upload:
-
-```powershell
-$details = (Invoke-RestMethod -Method Post `
-    -Uri 'https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/' `
-    -Body @{ itemcount = 1; 'publishedfileids[0]' = $publishedId }).response.publishedfiledetails[0]
-$details.file_size; $details.time_updated
-```
-
-See `~/.claude/.../memory/feedback_ugc_tool_direct_call_for_established.md` for the full incident write-up.
-
-### Why prefer launcher for build/deploy/list/info/doctor
-
-Those paths have no known issues and the launcher offers concrete wins:
+### Why prefer launcher
 
 Rationale:
 

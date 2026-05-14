@@ -35,8 +35,6 @@ This tool handles all of that.
 
 ## Headless mode
 
-> **Known issue (2026-05-14):** the staging pipeline used by `upload` and `all` silently fails for established Workshop items — `ugc_tool` prints `Upload finished` and exits 0, but `file_size` on the Workshop page doesn't change. Build / Deploy / List / Info / Doctor are unaffected. Use direct-call `.ps1` wrappers for upload until the staging path is fixed. See [`CLAUDE.md`](./CLAUDE.md) and [`CHANGELOG.md`](./CHANGELOG.md) for the full write-up.
-
 Any non-empty args (other than `--gui`) put the same binary into CLI mode:
 
 ```powershell

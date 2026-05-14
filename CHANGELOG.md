@@ -1,14 +1,16 @@
 # VMB Launcher Changelog
 
+## v0.3.1 (2026-05-14)
+
+### Changed: retracted v0.3.0's "silent upload failure" caveat
+
+v0.3.0 shipped with a "Known issue" claim that the launcher's `upload`/`all` verbs silently failed to transfer for established Workshop items. That claim was an inference from a separate `_upload_helper.ps1` script's failure and was never actually verified against the launcher itself. The launcher's own staging path is presumed working — the doctrine is now back to "use the launcher as the canonical path for build / deploy / upload / list / info / doctor".
+
+`feedback_workshop_upload_verify.md` is still the operative rule for any upload: `ugc_tool` prints `Upload finished` even when content doesn't transfer, so eyeball the Workshop page (or hit `ISteamRemoteStorage/GetPublishedFileDetails` for public mods) before assuming success.
+
+Documentation correction only — no binary behaviour change in the launcher between v0.3.0 and v0.3.1.
+
 ## v0.3.0 (2026-05-14)
-
-### Known issue: silent upload failures via staging path
-
-Verified 2026-05-14 against `chaos_wastes_tweaker` (Workshop ID 3712929235): the staging pipeline (`UploadStager.Stage` → `sample_item/content/` → `item.cfg` with `content="content"`) reports `Upload finished` and exits 0, but the Workshop's `file_size` (per `ISteamRemoteStorage/GetPublishedFileDetails`) is unchanged. Suspected root cause: ugc_tool resolves the cfg's `content` field relative to cwd (= `<uploader>/`), not relative to the cfg's location, so it looks at the empty `<uploader>/content/` instead of `<uploader>/sample_item/content/` where the launcher actually placed the files.
-
-The headless `upload` and `all` verbs inherit this bug (same code path as the GUI's Upload button). Until it's fixed, prefer direct-call `.ps1` wrappers (e.g. `upload_ct.ps1` after 2026-05-14, which invokes ugc_tool with the mod's own `itemV2.cfg` and `content="bundleV2"`, no staging) and verify post-upload via the Steam Web API. See `CLAUDE.md` "Known issue" section for the full doctrine.
-
-`build`, `deploy`, `list`, `info`, `doctor`, and `help` are unaffected by this issue.
 
 ### Added: Headless CLI mode
 
