@@ -1,5 +1,106 @@
 # VMB Launcher Changelog
 
+## v0.5.4 (2026-07-05)
+
+### Added: crossed-`published_id` guard on `deploy` / `upload` (#344 — hijack + double-install prevention)
+
+A crossed `published_id` in `itemV2.cfg` (correct at ship-start, **stomped mid-ship** in the #344 incident: `gui_tweaker_dev`'s cfg transiently carried `chaos_wastes_tweaker_dev`'s id `3733366926`) drove two irreversible failures through the launcher — the `upload` pushed gut content onto ct_dev's Workshop item (hijack), and a ct_dev `deploy` wrote ct files into gut's Workshop folder `3751024698`, making the game load ct_dev twice (VMF duplicate-mod fatal) and gut not at all. Because the id was crossed *during* the ship, a repo-level preflight can miss it — the guard has to run at the moment the launcher acts.
+
+New self-consistency check (no new canonical id map): a Workshop content folder `…\content\552500\<id>\` that already exists carries the owning mod's `<name>.mod` entry file. Before acting on an id, the launcher verifies that folder's `.mod` basename matches the mod being processed.
+
+- **`deploy`** (`ModRunner.DeployAsync`): checked BEFORE any file delete/copy. If folder `<id>` is owned by another mod, aborts with `[id-guard] REFUSING deploy: target folder <id> owned by '<foreignMod>', not '<mod>' …`. This is the check that would have prevented the user-facing breakage outright.
+- **`upload`** (`ModRunner.UploadAsync`): the `published_id` is read from the STAGED cfg (exactly what `ugc_tool` pushes) after staging, before the `ugc_tool` invocation. Foreign owner aborts with `[id-guard] REFUSING upload: cfg published_id <id> maps to Workshop folder owned by '<foreignMod>', not '<mod>' …`.
+- Shared primitive `ModRunner.FindForeignModOwner(contentDir, modName)` returns the foreign `.mod` basename or null. The extension match is EXACT `.mod` (not the `*.mod` glob — Windows' three-character search-pattern rule makes `EnumerateFiles(dir, "*.mod")` also return `*.mod_bundle` files, whose hash basenames would false-positive as foreign owners).
+- Graceful degradation: sentinel `0`/empty id (never-uploaded item), a missing local folder, an empty folder, or an unset `WorkshopContentRoot` all log `[id-guard] … proceeding` rather than block a legitimate first upload. A PASS logs `[id-guard] <id> owned by '<mod>'.mod - ok`.
+- **Remote deploy (PC-B scp) is left unguarded** — the remote-push path has no cheap way to list `<remote>/<id>/` for a foreign `.mod` before transferring, and inventing a remote listing/parse round-trip was out of scope. The local deploy runs first and its guard aborts the whole `DeployAsync` before the remote push is reached, so a crossed id local-and-remote is still caught; only a target whose crossed id exists ONLY remotely would slip through.
+
+New xUnit pins in `tests/WorkshopIdGuardTests.cs`: foreign `.mod` returns the owner name; own `.mod` returns null; empty dir / missing dir / `.mod_bundle`-only folder all return null (the last pinning the exact-extension rule).
+
+## v0.5.3 (2026-05-29)
+
+### Added: stale-bundle guard on `upload` / `all` (item 1 — #1 silent ship-wrong-thing path)
+
+`upload` previously only asserted bundles *exist*, never that they're newer than source — so `upload <mod>` could ship a stale `bundleV2/` if source changed since the last build (the documented "uploaded v0.2, game ran v0.1" burn). New `Services/PreflightGates.cs` → `BundleFreshness.Check(mod)` computes the newest mtime under `<mod>/scripts/**` and `<mod>/resource_packages/**` versus the newest `<mod>/bundleV2/*.mod_bundle`.
+
+- **`upload`**: if source is newer, emits a loud `[upload] WARNING: source newer than bundle — run 'build' first (shipping stale bundle)` to stderr but **proceeds** (a deliberate re-upload of a known-current bundle isn't hard-blocked).
+- **`all`**: `all` builds first, so a stale bundle there means the build didn't write bundles — new `ModRunner.AssertBundleFresh` **hard-fails** the pipeline after the build step (wired in `AllCommand`).
+
+### Added: cheap static-lint gate on `upload` (item 2 — closes the bypass every shipped %-format bug used)
+
+The pre-commit hook + CI run `qa/check_localization.ps1` and `qa/check_vmf_widget_types.ps1`, but the `build`→`deploy` iteration loop bypassed them (commit deferred) and CI is `continue-on-error`. `UploadAsync` now shells out to both, scoped to the single target mod (`-RepoRoot <mod-dir>`, ripgrep-fast), BEFORE staging:
+
+- `check_localization.ps1` exit 2 (errors — e.g. unescaped `%`) **blocks** the upload with the offending output; exit 1 (warnings) warns and proceeds.
+- `check_vmf_widget_types.ps1` any non-canonical widget type (exit 2) **blocks** (it has no warning tier).
+
+The gate is best-effort: if the qa script or a PowerShell host (`pwsh`/`powershell`) is genuinely absent it logs a skip rather than blocking (`QaScriptGate.Verdict.NotRun`).
+
+New xUnit pins in `tests/PreflightGatesTests.cs`: freshness stale/fresh/no-bundle/no-source/resource_packages cases, plus a planted-unescaped-`%` test asserting the localization gate returns `Error` (→ blocked upload) and a clean-loc test asserting it does not.
+
+### Related (outside the launcher binary)
+
+- **`tools/mod-lint/lint-mod.ps1`**: network-bound-mutation rule refined for precision — removed the `stat_buff = "max_*"` Pattern B (false-positived on crt's two `stat_buff = "max_health"` data entries), added guarded-downward-clamp recognition (`if X > CONST then X = CONST`, the load-bearing ct:7831 `_max_ammo` clamp), and still flags bare widening assignments. Self-test extended; verified false-positives gone on ct + crt and real detection survives. Doc + `qa/CHECKS.md` row 7f updated.
+- **`tools/mod-inventory.psd1`** (new): single source of truth for the active-mod inventory. `lint-mod.ps1` ($KnownMods — now scans all 4 dev clones + gui_tweaker; previously listed retired lobby_tweaker/material_hijack_patched and omitted dev clones), `tools/publish-release/publish-release.ps1` ($mods), and `qa/check_cfg.ps1` ($expectedVisibility) all read it.
+
+## v0.5.2 (2026-05-26)
+
+### Fixed: `UploadStager` ignored the cfg's `preview` field
+
+`Services/UploadStager.cs` iterated a hardcoded `{ item_preview.png, preview.jpg, preview.png }` list to choose which preview file to stage, ignoring the `preview = "<filename>";` line in `itemV2.cfg` entirely. Editing the cfg to point at a custom preview filename (e.g. `preview = "test.jpg";`) had no effect — the launcher silently kept staging the first hardcoded match found in the mod dir.
+
+**Fix.** `ModDiscovery.ParseItemCfg` now exposes a `Preview` property on `ModInfo` (mirroring the existing title/visibility/published_id parse). `UploadStager.Stage` honours `mod.Preview` as the primary path when set AND the named file exists in `<mod>/`, staging it under the cfg's literal name (no force-rename to `preview.jpg`). The hardcoded iteration becomes the fallback for mods whose cfg has no `preview` field.
+
+New xUnit pin `Stage_copies_cfg_named_preview_when_set` asserts the staged file appears under the cfg's name and the staged item.cfg matches.
+
+Burned 2026-05-26 while applying a unified thumbnail across friends-only Workshop mods — the cfg edits looked correct, the uploads silently kept the old preview.
+
+## v0.4.1 (2026-05-21)
+
+### Fixed: scp "unexpected filename" regression on remote deploy
+
+Every `deploy` and `all` invocation that had a `RemoteDeployTargets` entry enabled was failing the remote push with `scp: error: unexpected filename: C:\Users\danjo\source\repos\...`. OpenSSH 9 added a new "unexpected filename" guard that rejects positional args whose embedded `:` makes them look like a `host:path` remote spec — every Windows absolute path trips it (the `C:` prefix).
+
+**Fix.** Insert the `--` end-of-options sentinel between `-O` and the source path. After `--`, scp treats every remaining arg as positional and stops trying to parse the `:` in `C:\...` as a remote-spec separator. The destination spec (`pc-b:"..."`) stays after `--` deliberately — that arg still contains a real `host:path` separator and scp's positional parser handles it correctly.
+
+```csharp
+// Before:  new[] { "-O", src, destSpec }
+// After:   new[] { "-O", "--", src, destSpec }
+```
+
+Extracted into `RemoteDeploy.BuildScpArgs(src, destSpec)` so the arg ordering is unit-testable. Four new xUnit tests in `tests/RemoteDeployTests.cs` pin the sentinel position so this can't regress silently.
+
+Burned all four mods (`wt`, `ct`, `gt`, `cosmetics_tweaker`) on every `vmblauncher deploy` / `all` invocation between v0.4.0 (2026-05-20) and v0.4.1 (2026-05-21). Local deploy succeeded throughout; only the remote PC-B push failed, and the failure surfaced as the `local deploy OK, but remote push failed: ...` aggregate message added in v0.4.0.
+
+## v0.4.0 (2026-05-20)
+
+### Added: Multi-machine deploy — every `deploy` and `all` also pushes to remote targets
+
+`deploy` and `all` now push the built bundles to every enabled remote machine in `settings.json` immediately after the local Workshop-folder copy succeeds. Default behaviour, not opt-in — the standing rule (`feedback_deploy_both_machines.md`) is that iterative VT2 mod debugging must keep the test client in lockstep with the host, and local-only deploys silently masked four days of host/client sync bugs (cosmetics_tweaker v0.8.67-dev → v0.8.71, 2026-05-15 → 2026-05-19). The launcher now enforces the rule so workflows can't forget.
+
+**Configuration.** `settings.json` gains a `RemoteDeployTargets` array. Each target has:
+
+```json
+{
+  "Name": "pc-b",
+  "SshHost": "pc-b",
+  "WorkshopContentRoot": "C:/(025) Steam/steamapps/workshop/content/552500",
+  "Enabled": true
+}
+```
+
+`SshHost` must resolve via `~/.ssh/config` (key-only auth — headless mode can't prompt for passwords). `WorkshopContentRoot` is the remote machine's Steam content root for App ID 552500.
+
+**Auto-detect.** On first run, `AutoFillMissing` scans `~/.ssh/config` for `Host pc-b` and, if found, pre-fills the standard PC-B target with the canonical `(025) Steam` Steam path (per `reference_pc_b_dispatch.md`). The detector is a fixed allowlist so users with unrelated `pc-b` aliases don't get surprise deploys.
+
+**Transport.** Each bundle file is sent via `scp -O`. The `-O` flag forces legacy SCP protocol, which is required for Windows OpenSSH destinations whose paths contain spaces — the modern SFTP protocol mangles quote tokenisation in the remote PowerShell shell layer and produces `dest open ""C:/Program Files...""` errors. The `ssh` probe and post-transfer size verification both rely on the same alias and key.
+
+**Verification.** After transfer, the launcher runs a single `ssh` probe to list `<remote>/<workshopId>/` and asserts each local `name=size` pair appears in the listing. Catches truncated writes and silent zero-byte failures.
+
+**Opt-out.** `vmblauncher deploy <mod> --no-remote` skips the remote push for one invocation. `--no-remote` also works on `all`. The local deploy still runs and is still hash-verified.
+
+**Failure mode.** If any remote target fails (ssh probe, scp transfer, size mismatch), the whole `deploy` returns exit 1 with the local copy already in place. The user sees `local deploy OK, but remote push failed: <reason>` and knows immediately that PC-B is stale rather than discovering it three sessions later via a host/client desync crash. The previous silent-stale failure mode caused the v0.7.4-alpha → v0.7.10-alpha ct iteration burn.
+
+**No GUI surface for it yet.** Manage targets by hand in `%APPDATA%\VMBLauncher\settings.json` until there's enough usage signal to warrant the dialog. The auto-detect covers the only known case.
+
 ## v0.3.1 (2026-05-14)
 
 ### Changed: retracted v0.3.0's "silent upload failure" caveat

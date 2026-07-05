@@ -62,18 +62,36 @@ public static class UploadStager
         if (copied == 0)
             throw new InvalidOperationException($"No files in {mod.BundleV2Dir} to stage. Run Build first.");
 
-        // Copy preview if present. Default to item_preview.png; fall back to preview.jpg for older
-        // mods, otherwise leave it absent (ugc_tool will accept that for an item update where the
-        // preview was already set previously).
+        // Copy preview if present. Primary path: honour the cfg's `preview = "<name>";` field
+        // verbatim when set AND the named file exists on disk — that lets users point at custom
+        // preview filenames (e.g. a unified thumbnail across multiple mods) without having to
+        // rename to `item_preview.png`. Fallback path (legacy/cfg-empty): iterate the historical
+        // candidate list. Default to item_preview.png if nothing exists (ugc_tool will accept the
+        // absence for an item update where the preview was already set previously).
         var stagedPreviewName = "item_preview.png";
-        foreach (var candidate in new[] { "item_preview.png", "preview.jpg", "preview.png" })
+        var cfgPreview = mod.Preview ?? "";
+        var matched = false;
+        if (!string.IsNullOrWhiteSpace(cfgPreview))
         {
-            var srcPreview = Path.Combine(mod.ModDir, candidate);
+            var srcPreview = Path.Combine(mod.ModDir, cfgPreview);
             if (File.Exists(srcPreview))
             {
-                stagedPreviewName = candidate;
-                File.Copy(srcPreview, Path.Combine(stagingDir, candidate), overwrite: true);
-                break;
+                stagedPreviewName = cfgPreview;
+                File.Copy(srcPreview, Path.Combine(stagingDir, cfgPreview), overwrite: true);
+                matched = true;
+            }
+        }
+        if (!matched)
+        {
+            foreach (var candidate in new[] { "item_preview.png", "preview.jpg", "preview.png" })
+            {
+                var srcPreview = Path.Combine(mod.ModDir, candidate);
+                if (File.Exists(srcPreview))
+                {
+                    stagedPreviewName = candidate;
+                    File.Copy(srcPreview, Path.Combine(stagingDir, candidate), overwrite: true);
+                    break;
+                }
             }
         }
 

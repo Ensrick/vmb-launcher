@@ -13,6 +13,7 @@ public sealed class ModInfo
     public string Visibility { get; set; } = "private";
     public string Language { get; set; } = "english";
     public string ContentDir { get; set; } = "bundleV2";
+    public string Preview { get; set; } = "";
     public string PublishedId { get; set; } = "";
     public IReadOnlyList<string> Tags { get; set; } = Array.Empty<string>();
     public bool HasBuildOutput { get; set; }
@@ -72,6 +73,7 @@ public static class ModDiscovery
         info.Visibility = ExtractString(raw, "visibility") ?? "private";
         info.Language = ExtractString(raw, "language") ?? "english";
         info.ContentDir = ExtractString(raw, "content") ?? "bundleV2";
+        info.Preview = ExtractString(raw, "preview") ?? "";
         info.PublishedId = ExtractPublishedId(raw) ?? "";
     }
 
@@ -92,6 +94,24 @@ public static class ModDiscovery
     {
         var m = PublishedIdRegex.Match(raw);
         return m.Success ? m.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// Returns another mod in <paramref name="allMods"/> that shares <paramref name="mod"/>'s
+    /// published_id, or null if the id is unique. A shared published_id means uploading one mod
+    /// HIJACKS the other's Workshop item — every ugc_tool push targets whatever published_id the
+    /// cfg names. (2026-06-19: gui_tweaker's cfg carried general_tweaker_dev's id 3733367409 and
+    /// silently overwrote "Tweaker: General (dev)" with "Tweaker: GUI" on every upload.) The
+    /// sentinel "0" / empty value (a new, never-uploaded item) never collides. See
+    /// qa/check_published_ids.ps1 + qa/PUBLISHED_IDS.md.
+    /// </summary>
+    public static ModInfo? FindPublishedIdCollision(ModInfo mod, IEnumerable<ModInfo> allMods)
+    {
+        var id = mod.PublishedId?.Trim();
+        if (string.IsNullOrEmpty(id) || id == "0") return null;
+        return allMods.FirstOrDefault(other =>
+            !string.Equals(other.Name, mod.Name, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(other.PublishedId?.Trim(), id, StringComparison.Ordinal));
     }
 
     private static string Unescape(string s) =>

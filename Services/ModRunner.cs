@@ -54,6 +54,9 @@ public sealed class ModRunner
     }
 
     public async Task<RunOutcome> DeployAsync(ModInfo mod, CancellationToken ct = default)
+        => await DeployAsync(mod, skipRemote: false, ct);
+
+    public async Task<RunOutcome> DeployAsync(ModInfo mod, bool skipRemote, CancellationToken ct = default)
     {
         await Task.Yield();
 
@@ -71,6 +74,14 @@ public sealed class ModRunner
 
         if (!Directory.Exists(mod.BundleV2Dir))
             return new RunOutcome(false, $"No build output. Run Build first ({mod.BundleV2Dir} not found).");
+
+        // Issue #344 crossed-published_id guard. Before we DELETE + overwrite files in this
+        // Workshop folder, verify the folder is actually owned by THIS mod. A crossed id would
+        // otherwise write this mod's bundle into another mod's item folder — the user-facing #344
+        // breakage: gut_dev's ship carried ct_dev's id, so a deploy wrote ct files into gut's
+        // folder, the game then double-loaded ct (VMF duplicate-mod fatal) and never loaded gut.
+        var deployGuard = CheckWorkshopIdOwnership(id, mod, "deploy");
+        if (!deployGuard.Ok) return deployGuard;
 
         L($"[deploy] {mod.Name} -> {dst}");
 
@@ -93,10 +104,26 @@ public sealed class ModRunner
             copied++;
         }
         L($"[deploy] OK -- {copied} file(s) copied to {Path.GetFileName(dst)}/");
+
+        // Remote push (PC-B and any other configured target) runs by default. The user's
+        // standing rule (feedback_deploy_both_machines) is that local-only deploys mask
+        // host/client sync bugs because the test PC keeps running the stale build. The
+        // launcher enforces the rule so individual workflows can't forget. Opt out per-
+        // invocation with --no-remote when the user really only wants the local push.
+        if (!skipRemote && _settings.RemoteDeployTargets.Count > 0)
+        {
+            var remote = await RemoteDeploy.PushAsync(_settings.RemoteDeployTargets, mod.BundleV2Dir, id, _log, ct);
+            if (!remote.Ok)
+                return new RunOutcome(false, $"local deploy OK, but remote push failed: {remote.Message}");
+        }
+
         return new RunOutcome(true, $"Deployed {copied} file(s)");
     }
 
     public async Task<RunOutcome> UploadAsync(ModInfo mod, bool allowPublic, CancellationToken ct = default)
+        => await UploadAsync(mod, allowPublic, dryRunTitleRewrite: false, ct);
+
+    public async Task<RunOutcome> UploadAsync(ModInfo mod, bool allowPublic, bool dryRunTitleRewrite, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(_settings.UgcToolPath) || !File.Exists(_settings.UgcToolPath))
             return new RunOutcome(false, "ugc_tool.exe not found. Set the path in Settings.");
@@ -111,6 +138,79 @@ public sealed class ModRunner
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
 
         L($"[upload] {mod.Name}");
+
+        // --- Stale-bundle guard ----------------------------------------------------------
+        // upload only stages the existing bundleV2/. If source changed since the last build
+        // the bundle is stale and we'd ship the OLD content (the documented "uploaded v0.2,
+        // game ran v0.1" burn — tools/vmb-launcher/CLAUDE.md § "When to use all instead of
+        // upload"). We WARN loudly but proceed, so a deliberate re-upload of a known-current
+        // bundle isn't hard-blocked. `all` builds first, so it instead HARD-FAILS via
+        // AssertBundleFresh below.
+        var fresh = BundleFreshness.Check(mod);
+        if (fresh.Stale)
+        {
+            Console.Error.WriteLine("[upload] WARNING: source newer than bundle — run 'build' first (shipping stale bundle)");
+            if (fresh.NewestSourceFile != null)
+                Console.Error.WriteLine($"[upload]   newest source: {fresh.NewestSourceFile} ({fresh.NewestSource:u}) > newest bundle ({fresh.NewestBundle:u})");
+        }
+
+        // --- Cheap static-lint gate ------------------------------------------------------
+        // Promote the qa/*.ps1 lints that the pre-commit hook + CI run into the upload path.
+        // The build→deploy iteration loop defers commits (so the hook never fires) and CI is
+        // continue-on-error (report-only), so every shipped unescaped-% / invalid-widget-type
+        // bug slipped through here. Scope each scan to the single mod dir (ripgrep-fast).
+        //   - check_localization.ps1: exit 2 (errors, e.g. unescaped %) BLOCKS; exit 1 warns.
+        //   - check_vmf_widget_types.ps1: any non-canonical type is a hard error (exit 2) and
+        //     BLOCKS; it has no warning tier.
+        var locGate = await QaScriptGate.RunAsync(mod, "check_localization.ps1", L, ct);
+        if (locGate.Verdict == QaScriptGate.Verdict.Error)
+            return new RunOutcome(false, $"localization check failed (exit {locGate.ExitCode}) — fix before upload (e.g. unescaped % in a *_localization.lua value):\n{locGate.Stdout.TrimEnd()}");
+        if (locGate.Verdict == QaScriptGate.Verdict.Warn)
+            L($"[upload] localization check: warnings only (exit 1), proceeding");
+        else if (locGate.Verdict == QaScriptGate.Verdict.NotRun)
+            L($"[upload] localization check skipped: {locGate.Stdout}");
+
+        var widgetGate = await QaScriptGate.RunAsync(mod, "check_vmf_widget_types.ps1", L, ct);
+        if (widgetGate.Verdict == QaScriptGate.Verdict.Error)
+            return new RunOutcome(false, $"VMF widget-type check failed (exit {widgetGate.ExitCode}) — an invalid widget type breaks the mod's entire options init at load:\n{widgetGate.Stdout.TrimEnd()}");
+        if (widgetGate.Verdict == QaScriptGate.Verdict.NotRun)
+            L($"[upload] widget-type check skipped: {widgetGate.Stdout}");
+
+        // Auto-sync the cfg title's ` v<MOD_VERSION>` suffix from the mod's lua MOD_VERSION
+        // constant. Per PROJECT_STANDARDS §6.3 and memory feedback_version_in_workshop_title,
+        // every upload appends/refreshes the trailing version suffix on the cfg title so the
+        // Workshop page version matches what's shipping in the bundle. Only the suffix is
+        // managed; description and other fields are untouched. Aborts the upload if
+        // MOD_VERSION can't be parsed — surface the gap rather than fall back to a date stamp.
+        TitleRewriteResult titleResult;
+        try
+        {
+            titleResult = TitleVersionSync.SyncTitle(mod, dryRun: dryRunTitleRewrite);
+        }
+        catch (Exception ex)
+        {
+            return new RunOutcome(false, $"Title-version sync failed: {ex.Message}");
+        }
+        if (titleResult.Changed)
+        {
+            var verb = dryRunTitleRewrite ? "would rewrite" : "rewrote";
+            L($"[upload] {verb} cfg title: '{titleResult.OldTitle}' -> '{titleResult.NewTitle}'");
+            if (dryRunTitleRewrite)
+            {
+                L("[upload] --dry-run-title-rewrite: skipping ugc_tool push.");
+                return new RunOutcome(true, $"Dry-run: would rewrite title to '{titleResult.NewTitle}'");
+            }
+        }
+        else if (!string.IsNullOrEmpty(titleResult.NewTitle))
+        {
+            L($"[upload] cfg title already in sync ('{titleResult.NewTitle}')");
+            if (dryRunTitleRewrite)
+            {
+                L("[upload] --dry-run-title-rewrite: skipping ugc_tool push.");
+                return new RunOutcome(true, "Dry-run: title already in sync");
+            }
+        }
+
         // Stage the mod into <sdk>/ugc_uploader/sample_item/ and invoke ugc_tool from the
         // ugc_uploader directory with a relative cfg path — verbatim match for the SDK's own
         // upload.bat ("ugc_tool -c sample_item/item.cfg") and for the maintainer's legacy
@@ -120,6 +220,16 @@ public sealed class ModRunner
         try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
         catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
         L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");
+
+        // Issue #344 crossed-published_id guard. The staged cfg is EXACTLY what ugc_tool pushes,
+        // so read the published_id from it (not from mod.PublishedId) — in the incident the id was
+        // correct at ship-start but stomped mid-ship, so a repo-level preflight could miss it; the
+        // guard must read the id at the moment we act. If that id maps to a local Workshop folder
+        // owned by a different mod, ugc_tool would push THIS mod's content onto the OTHER mod's
+        // item (an irreversible hijack). Refuse before invoking ugc_tool.
+        var stagedPublishedId = ModDiscovery.ExtractPublishedId(File.ReadAllText(staged.CfgPath));
+        var uploadGuard = CheckWorkshopIdOwnership(stagedPublishedId, mod, "upload");
+        if (!uploadGuard.Ok) return uploadGuard;
 
         var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
         var uploaderDir = Path.GetDirectoryName(_settings.UgcToolPath!)!.Replace('\\', '/');
@@ -141,11 +251,101 @@ public sealed class ModRunner
         return new RunOutcome(true, "Upload finished (verify size on Workshop page)");
     }
 
+    /// <summary>
+    /// Defensive post-build freshness assertion used by the `all` pipeline. `all` always
+    /// builds first, so a stale bundle here means the build claimed success but didn't write
+    /// fresh bundles — a hard failure, not a warning. (The `upload` verb, which doesn't build,
+    /// only warns; see UploadAsync.)
+    /// </summary>
+    public RunOutcome AssertBundleFresh(ModInfo mod)
+    {
+        var fresh = BundleFreshness.Check(mod);
+        if (fresh.Stale)
+            return new RunOutcome(false,
+                $"bundle still stale after build (newest source {fresh.NewestSourceFile} {fresh.NewestSource:u} > newest bundle {fresh.NewestBundle:u}) — build did not write fresh bundles");
+        return new RunOutcome(true, "bundle fresh");
+    }
+
     private string? ResolveWorkshopId(ModInfo mod)
     {
         if (_settings.WorkshopIdOverrides.TryGetValue(mod.Name, out var ov) && !string.IsNullOrEmpty(ov))
             return ov;
         return string.IsNullOrEmpty(mod.PublishedId) ? null : mod.PublishedId;
+    }
+
+    /// <summary>
+    /// Issue #344 crossed-published_id guard, shared by the upload and deploy paths. Verifies the
+    /// local Workshop content folder for <paramref name="publishedId"/> is owned by
+    /// <paramref name="mod"/> before the caller acts on that id. Returns a FAILING RunOutcome to
+    /// abort (a crossed id would hijack another mod's item on upload, or double-install a foreign
+    /// mod on deploy), or an OK RunOutcome — with a pass / first-upload / not-configured log line —
+    /// to proceed. <paramref name="action"/> is "upload" or "deploy" and only shapes the refusal
+    /// message. The sentinel "0"/empty id (never-uploaded item) and a missing WorkshopContentRoot
+    /// setting both degrade gracefully to "proceed" rather than block a legitimate first upload.
+    /// </summary>
+    private RunOutcome CheckWorkshopIdOwnership(string? publishedId, ModInfo mod, string action)
+    {
+        var id = publishedId?.Trim();
+        if (string.IsNullOrEmpty(id) || id == "0")
+        {
+            L($"[id-guard] no local owner evidence for {(string.IsNullOrEmpty(id) ? "(none)" : id)} (first upload?) - proceeding");
+            return new RunOutcome(true, "id-guard: no published id yet");
+        }
+
+        var root = _settings.WorkshopContentRoot;
+        if (string.IsNullOrEmpty(root))
+        {
+            L($"[id-guard] Workshop content root not configured - cannot verify owner for {id}, proceeding");
+            return new RunOutcome(true, "id-guard: no workshop root configured");
+        }
+
+        var contentDir = Path.Combine(root, id);
+        var foreignOwner = FindForeignModOwner(contentDir, mod.Name);
+        if (foreignOwner != null)
+        {
+            var msg = action == "deploy"
+                ? $"[id-guard] REFUSING deploy: target folder {id} owned by '{foreignOwner}', not '{mod.Name}'. A crossed id writes this mod's files into another item's Workshop folder, double-installing it (issue #344)."
+                : $"[id-guard] REFUSING upload: cfg published_id {id} maps to Workshop folder owned by '{foreignOwner}', not '{mod.Name}'. A crossed id hijacks another mod's item (issue #344).";
+            return new RunOutcome(false, msg);
+        }
+
+        // Not foreign: either the folder carries our own <name>.mod (owned - ok) or it has no .mod
+        // evidence yet (a legitimate first upload / freshly-subscribed empty folder).
+        var hasOwnMarker = Directory.Exists(contentDir)
+            && Directory.EnumerateFiles(contentDir)
+                .Any(f => string.Equals(Path.GetExtension(f), ".mod", StringComparison.OrdinalIgnoreCase));
+        if (hasOwnMarker)
+            L($"[id-guard] {id} owned by '{mod.Name}'.mod - ok");
+        else
+            L($"[id-guard] no local owner evidence for {id} (first upload?) - proceeding");
+        return new RunOutcome(true, "id-guard: ok");
+    }
+
+    /// <summary>
+    /// Issue #344 self-consistency primitive. A Workshop content folder
+    /// <c>…\content\552500\&lt;id&gt;\</c> that already exists on disk carries the owning mod's
+    /// <c>&lt;name&gt;.mod</c> entry file (VMB names it after the mod directory; the bundles beside
+    /// it are hash-named <c>*.mod_bundle</c>). Returns the basename of a foreign <c>.mod</c> file
+    /// when the folder is owned by some mod OTHER than <paramref name="modName"/>, else null. Null
+    /// covers "folder is ours", "folder has no .mod evidence yet" (legit first upload), and "folder
+    /// doesn't exist". A non-null result means the id has been crossed onto <paramref name="modName"/>.
+    /// </summary>
+    /// <remarks>
+    /// The extension match is EXACT (<c>.mod</c>), NOT the <c>*.mod</c> glob: Windows' three-character
+    /// search-pattern rule makes <c>Directory.EnumerateFiles(dir, "*.mod")</c> ALSO return
+    /// <c>*.mod_bundle</c> files, whose hash basenames never match a mod name and would produce a
+    /// false foreign-owner verdict.
+    /// </remarks>
+    public static string? FindForeignModOwner(string contentDir, string modName)
+    {
+        if (string.IsNullOrEmpty(contentDir) || !Directory.Exists(contentDir)) return null;
+        var modFiles = Directory.EnumerateFiles(contentDir)
+            .Where(f => string.Equals(Path.GetExtension(f), ".mod", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (modFiles.Count == 0) return null;
+        if (modFiles.Any(f => string.Equals(Path.GetFileNameWithoutExtension(f), modName, StringComparison.OrdinalIgnoreCase)))
+            return null;
+        return Path.GetFileNameWithoutExtension(modFiles[0]);
     }
 
     private static string HashFile(string path)

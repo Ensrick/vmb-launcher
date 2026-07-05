@@ -14,12 +14,12 @@
     <AssemblyName>VMBLauncher</AssemblyName>
     <RootNamespace>VmbLauncher</RootNamespace>
     <ApplicationIcon></ApplicationIcon>
-    <Version>0.3.1</Version>
+    <Version>0.5.4</Version>
     <Company>danjo</Company>
     <Product>VMB Launcher</Product>
     <AssemblyTitle>VMB Launcher</AssemblyTitle>
-    <FileVersion>0.3.1.0</FileVersion>
-    <InformationalVersion>0.3.1</InformationalVersion>
+    <FileVersion>0.5.4.0</FileVersion>
+    <InformationalVersion>0.5.4</InformationalVersion>
     <!-- Custom entry point so headless mode can attach to the parent console
          before WPF would otherwise allocate one. See Program.cs. -->
     <StartupObject>VmbLauncher.Program</StartupObject>

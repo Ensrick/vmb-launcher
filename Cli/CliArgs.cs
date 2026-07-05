@@ -17,6 +17,8 @@ public sealed class CliArgs
     public bool Clean { get; init; }
     public bool AllowPublic { get; init; }
     public bool NoBanner { get; init; }
+    public bool NoRemote { get; init; }
+    public bool DryRunTitleRewrite { get; init; }
     public bool Help { get; init; }
     public string? ConfigPath { get; init; }
     public List<string> Unknown { get; init; } = new();
@@ -28,6 +30,8 @@ public sealed class CliArgs
         bool clean = false;
         bool allowPublic = false;
         bool noBanner = false;
+        bool noRemote = false;
+        bool dryRunTitleRewrite = false;
         bool help = false;
         string? configPath = null;
         var unknown = new List<string>();
@@ -50,6 +54,14 @@ public sealed class CliArgs
             else if (a == "--no-banner")
             {
                 noBanner = true;
+            }
+            else if (a == "--no-remote")
+            {
+                noRemote = true;
+            }
+            else if (a == "--dry-run-title-rewrite")
+            {
+                dryRunTitleRewrite = true;
             }
             else if (a == "--config")
             {
@@ -81,6 +93,8 @@ public sealed class CliArgs
             Clean = clean,
             AllowPublic = allowPublic,
             NoBanner = noBanner,
+            NoRemote = noRemote,
+            DryRunTitleRewrite = dryRunTitleRewrite,
             Help = help,
             ConfigPath = configPath,
             Unknown = unknown,

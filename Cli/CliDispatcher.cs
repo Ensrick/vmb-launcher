@@ -90,11 +90,18 @@ VERBS
   info     <mod-name>               Print cfg + bundle state for one mod.
   doctor                            Run diagnostics (same checks the GUI's first-run dialog runs).
   build    <mod-name> [--clean]     VMB build the mod into bundleV2/.
-  deploy   <mod-name>               Copy bundleV2/ into Workshop content folder (hash-verified).
-  upload   <mod-name> [--allow-public]
+  deploy   <mod-name> [--no-remote] Copy bundleV2/ into Workshop content folder (hash-verified),
+                                    then push to every enabled remote target in
+                                    settings.json (default: pc-b via Tailscale, auto-detected).
+                                    --no-remote skips the remote push for this invocation only.
+  upload   <mod-name> [--allow-public] [--dry-run-title-rewrite]
                                     Stage and upload to Workshop via ugc_tool.
-                                    --allow-public is REQUIRED if itemV2.cfg has visibility="public".
-  all      <mod-name> [--clean] [--allow-public]
+                                    Before staging, rewrites itemV2.cfg's `title` suffix to
+                                    " v<MOD_VERSION>" from the mod's main lua MOD_VERSION
+                                    constant. --allow-public is REQUIRED if visibility="public".
+                                    --dry-run-title-rewrite prints the would-be title change
+                                    and exits without writing the cfg or pushing to Workshop.
+  all      <mod-name> [--clean] [--allow-public] [--no-remote] [--dry-run-title-rewrite]
                                     build + deploy + upload, stopping on first failure.
 
 GLOBAL FLAGS

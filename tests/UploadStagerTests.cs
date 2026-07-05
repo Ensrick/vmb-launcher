@@ -12,7 +12,7 @@ public class UploadStagerTests
         public string UgcToolPath { get; }
         public ModInfo Mod { get; }
 
-        public FakeSdk(bool withPreview = true, bool withBundles = true, string? publishedId = null)
+        public FakeSdk(bool withPreview = true, bool withBundles = true, string? publishedId = null, string? cfgContent = null)
         {
             SdkDir = new TempDir();
             var uploaderDir = SdkDir.CreateSubdir("ugc_uploader");
@@ -32,9 +32,12 @@ public class UploadStagerTests
                 File.WriteAllBytes(Path.Combine(ModDir.Path, "item_preview.png"), new byte[] { 0x89, 0x50 });
             }
 
-            var cfgContent = $"title = \"My Mod\";\ndescription = \"desc\";\npreview = \"item_preview.png\";\ncontent = \"bundleV2\";\nlanguage = \"english\";\nvisibility = \"private\";\n";
-            if (publishedId != null) cfgContent += $"published_id = {publishedId}L;\n";
-            cfgContent += "apply_for_sanctioned_status = false;\ntags = [ ];\n";
+            if (cfgContent == null)
+            {
+                cfgContent = $"title = \"My Mod\";\ndescription = \"desc\";\npreview = \"item_preview.png\";\ncontent = \"bundleV2\";\nlanguage = \"english\";\nvisibility = \"private\";\n";
+                if (publishedId != null) cfgContent += $"published_id = {publishedId}L;\n";
+                cfgContent += "apply_for_sanctioned_status = false;\ntags = [ ];\n";
+            }
             var cfgPath = Path.Combine(ModDir.Path, "itemV2.cfg");
             File.WriteAllText(cfgPath, cfgContent);
 
@@ -70,6 +73,29 @@ public class UploadStagerTests
         using var fake = new FakeSdk(withPreview: true);
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
         Assert.True(File.Exists(Path.Combine(staged.StagingDir, "item_preview.png")));
+    }
+
+    [Fact]
+    public void Stage_copies_cfg_named_preview_when_set()
+    {
+        // When itemV2.cfg's `preview` field names a custom filename (e.g. a unified thumbnail used
+        // across multiple friends-only mods) and that file exists in the mod dir, the launcher must
+        // stage THAT file under its literal name — NOT silently fall through to item_preview.png.
+        // Regression-guards the bug where the fixed candidate list `{ item_preview.png, preview.jpg,
+        // preview.png }` made the cfg field effectively dead.
+        var cfg = "title = \"My Mod\";\ndescription = \"desc\";\npreview = \"my_custom.jpg\";\n"
+                + "content = \"bundleV2\";\nlanguage = \"english\";\nvisibility = \"private\";\n"
+                + "apply_for_sanctioned_status = false;\n";
+        using var fake = new FakeSdk(withPreview: false, cfgContent: cfg);
+        // Drop the custom-named preview file into the mod dir.
+        File.WriteAllBytes(Path.Combine(fake.Mod.ModDir, "my_custom.jpg"), new byte[] { 0xFF, 0xD8 });
+
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+
+        Assert.True(File.Exists(Path.Combine(staged.StagingDir, "my_custom.jpg")));
+        Assert.False(File.Exists(Path.Combine(staged.StagingDir, "item_preview.png")));
+        var rawCfg = File.ReadAllText(staged.CfgPath);
+        Assert.Contains("preview = \"my_custom.jpg\";", rawCfg);
     }
 
     [Fact]

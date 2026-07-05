@@ -26,6 +26,15 @@ internal static class CmdShared
         return mod;
     }
 
+    /// <summary>Print the hijack-abort message for a published_id collision.</summary>
+    public static void WriteCollisionError(ModInfo mod, ModInfo collision)
+    {
+        Console.Error.WriteLine(
+            $"vmblauncher: ABORT — '{mod.Name}' and '{collision.Name}' BOTH use published_id {mod.PublishedId}. " +
+            $"Uploading would HIJACK '{collision.Name}'s Workshop item (overwrite its title + content). " +
+            $"Fix the published_id in one of the itemV2.cfg files first — see qa/PUBLISHED_IDS.md.");
+    }
+
     /// <summary>
     /// Same gate the GUI's Preflight() runs before each action — error-level diagnostics
     /// matching the action's required titles block execution.
@@ -166,7 +175,7 @@ internal static class DeployCommand
         if (mod == null) return CliDispatcher.ExitBadUsage;
 
         var runner = new ModRunner(settings, Console.WriteLine);
-        var outcome = runner.DeployAsync(mod, ct: default).GetAwaiter().GetResult();
+        var outcome = runner.DeployAsync(mod, skipRemote: args.NoRemote, ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(outcome, "deploy");
     }
 }
@@ -182,6 +191,10 @@ internal static class UploadCommand
         var mod = CmdShared.ResolveMod(args, settings, "upload");
         if (mod == null) return CliDispatcher.ExitBadUsage;
 
+        // Hijack guard: refuse to upload if another mod's cfg shares this published_id.
+        var collision = ModDiscovery.FindPublishedIdCollision(mod, ModDiscovery.ScanMods(settings));
+        if (collision != null) { CmdShared.WriteCollisionError(mod, collision); return CliDispatcher.ExitBadUsage; }
+
         // Mirror MainWindow.BtnUpload_Click: when visibility=public, the GUI shows a modal
         // confirmation. Headless equivalent: require --allow-public on the command line so
         // the dangerous case can't slip through unattended.
@@ -192,7 +205,7 @@ internal static class UploadCommand
         }
 
         var runner = new ModRunner(settings, Console.WriteLine);
-        var outcome = runner.UploadAsync(mod, allowPublic: args.AllowPublic, ct: default).GetAwaiter().GetResult();
+        var outcome = runner.UploadAsync(mod, allowPublic: args.AllowPublic, dryRunTitleRewrite: args.DryRunTitleRewrite, ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(outcome, "upload");
     }
 }
@@ -208,6 +221,10 @@ internal static class AllCommand
         var mod = CmdShared.ResolveMod(args, settings, "all");
         if (mod == null) return CliDispatcher.ExitBadUsage;
 
+        // Hijack guard: refuse the whole pipeline if another mod's cfg shares this published_id.
+        var collision = ModDiscovery.FindPublishedIdCollision(mod, ModDiscovery.ScanMods(settings));
+        if (collision != null) { CmdShared.WriteCollisionError(mod, collision); return CliDispatcher.ExitBadUsage; }
+
         if (mod.IsPublic && !args.AllowPublic)
         {
             Console.Error.WriteLine($"vmblauncher: {mod.Name} has visibility=\"public\". Re-run with --allow-public to confirm.");
@@ -217,9 +234,13 @@ internal static class AllCommand
         var runner = new ModRunner(settings, Console.WriteLine);
         var b = runner.BuildAsync(mod, clean: args.Clean, ct: default).GetAwaiter().GetResult();
         if (!b.Ok) return CmdShared.RunOutcome(b, "build");
-        var d = runner.DeployAsync(mod, ct: default).GetAwaiter().GetResult();
+        // Defensive: `all` just built, so the bundle must be fresh. A stale bundle here means
+        // the build reported success without writing bundles — hard-fail rather than ship it.
+        var fresh = runner.AssertBundleFresh(mod);
+        if (!fresh.Ok) return CmdShared.RunOutcome(fresh, "build");
+        var d = runner.DeployAsync(mod, skipRemote: args.NoRemote, ct: default).GetAwaiter().GetResult();
         if (!d.Ok) return CmdShared.RunOutcome(d, "deploy");
-        var u = runner.UploadAsync(mod, allowPublic: args.AllowPublic, ct: default).GetAwaiter().GetResult();
+        var u = runner.UploadAsync(mod, allowPublic: args.AllowPublic, dryRunTitleRewrite: args.DryRunTitleRewrite, ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(u, "upload");
     }
 }

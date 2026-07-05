@@ -17,6 +17,13 @@ public sealed class Settings
 
     public Dictionary<string, string> WorkshopIdOverrides { get; set; } = new();
 
+    /// <summary>
+    /// Remote machines deployed to alongside the local Workshop folder. Auto-populated
+    /// on first run from ~/.ssh/config (currently: pc-b). Manage via direct edits to
+    /// settings.json; the GUI surface is intentionally minimal.
+    /// </summary>
+    public List<RemoteDeployTarget> RemoteDeployTargets { get; set; } = new();
+
     public bool ConfirmedFirstRun { get; set; }
 
     [JsonIgnore]
@@ -106,6 +113,20 @@ public sealed class Settings
         {
             var n = VmbLocator.FindNode();
             if (n != null) { NodePath = n; changed = true; }
+        }
+
+        // Auto-populate remote deploy targets once. The detector reads ~/.ssh/config; if the
+        // user has the standard `Host pc-b` alias configured, a target gets added with the
+        // canonical (025) Steam workshop path pinned from project memory. Repeated AutoFill
+        // calls are safe — we only add hosts not already in the list.
+        var detected = RemoteDeploy.AutoDetectFromSshConfig();
+        foreach (var d in detected)
+        {
+            if (!RemoteDeployTargets.Any(t => string.Equals(t.SshHost, d.SshHost, StringComparison.OrdinalIgnoreCase)))
+            {
+                RemoteDeployTargets.Add(d);
+                changed = true;
+            }
         }
 
         return changed;
