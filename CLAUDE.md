@@ -60,7 +60,7 @@ right tool for local build/deploy iteration (no upload).
 
 ### Default: prefer the launcher for everything
 
-`VMBLauncher.exe` (headless or GUI) is the single source of truth for build / deploy / upload / list / info / doctor across all VT2 mods in this repo. The `.ps1` wrappers in the repo root (`upload_*.ps1`, `deploy_*.ps1`, `deploy_all.ps1`) are thin convenience wrappers around the launcher — they exist for muscle memory and exit cleanly with the launcher's exit code.
+`VMBLauncher.exe` (headless or GUI) is the single source of truth for build / deploy / upload / list / info / doctor across all VT2 mods in this repo. Drive it via `tools\ship\ship.ps1` (the full build+deploy+upload+release+verify pipeline). (The per-mod `upload_*.ps1` wrappers were removed 2026-07-07, archived to `../_vt2-tweaker-archive/`; the earlier `deploy_*.ps1` / `deploy_all.ps1` wrappers were removed 2026-05-21 — use `ship.ps1` or `VMBLauncher.exe deploy/upload <mod>` directly.)
 
 **Do not** invent `scp`/`ssh`/Robocopy pipelines for PC-B deploy. The launcher already does it (v0.4.0+) — `deploy` and `all` push to every enabled `RemoteDeployTargets` entry after the local copy completes. Reaching for raw scp means either the launcher is broken (file an issue) or the user has a one-off reason to bypass it (in which case ask, don't assume).
 
@@ -76,7 +76,7 @@ For any `upload` call on a mod where the author IS the tester, follow with `depl
 & $exe all <mod>      # build + deploy + upload — covers both author + subscribers
 ```
 
-Avoid bare `upload` during iterative dev unless you've already deployed the same bundle locally. Reverse failure mode also exists: `deploy_*.ps1` (now archived) only copied to the LOCAL Workshop folder, leaving SUBSCRIBERS stale until `upload_*.ps1` ran. `vmblauncher all <mod>` covers both directions.
+Avoid bare `upload` during iterative dev unless you've already deployed the same bundle locally. Reverse failure mode also exists: a deploy alone only copies to the LOCAL Workshop folder, leaving SUBSCRIBERS stale until an `upload` runs. `vmblauncher all <mod>` (and `ship.ps1`) cover both directions.
 
 **Burned 2026-05-16** in verminious_dreams_lighting tuning loop: uploaded v0.2 and v0.3 to Workshop, user restarted VT2, still ran v0.1.0-dev (confirmed via console log `[MOD][verminious_dreams_lighting][ECHO] Verminious Dreams Lighting v0.1.0-dev`). User saw v0.1 semantics and reported "nothing changed". Several minutes wasted on "restart Steam / unsub-resub" diagnostic before the log mismatch surfaced. Use `all`.
 
@@ -171,7 +171,7 @@ For private mods (`visibility = "friends_only"` or `"private"`), no flag is need
 
 Note: per the SDK README, the canonical visibility values are `"private"`, `"friends"`, `"public"`. The repo's mods predominantly use `"friends_only"` which may not be a recognised value at the API layer — but it's what's been on disk through many successful uploads, so this doctrine treats it as the user's intent. **Do not silently rewrite visibility.**
 
-**Dev-stream clones never use `--allow-public`.** The four `<mod>-dev/` directories (`chaos_wastes_tweaker-dev`, `crafting_in_modded-dev`, `general_tweaker-dev`, `verminious_dreams_lighting-dev`) are friends-only by design (see repo-root `CLAUDE.md` § "Dev/stable split workflow"). Their `itemV2.cfg` must keep `visibility = "friends_only"` and the launcher's `upload`/`all` invocations for them must never pass `--allow-public`. Only the matching stable directories (`chaos_wastes_tweaker`, `crafting_in_modded`, `general_tweaker`, `verminious_dreams_lighting`) take that flag.
+**Dev-stream clones never use `--allow-public`.** The five `<mod>_dev/` directories (`chaos_wastes_tweaker_dev`, `crafting_in_modded_dev`, `general_tweaker_dev`, `gui_tweaker_dev`, `verminious_dreams_lighting_dev`) are friends-only by design (see repo-root `CLAUDE.md` § "Dev/stable split workflow"). Their `itemV2.cfg` must keep `visibility = "friends_only"` and the launcher's `upload`/`all` invocations for them must never pass `--allow-public`. Only the matching stable directories (`chaos_wastes_tweaker`, `crafting_in_modded`, `general_tweaker`, `gui_tweaker`, `verminious_dreams_lighting`) take that flag.
 
 ## Remote deploy targets
 
@@ -443,8 +443,9 @@ read: most tweaker mods are intentionally `private` or
 intentionally `public` (others may have moved between sessions —
 check the table).
 
-`upload_wt.ps1` aborts with an error if `weapon_tweaker/itemV2.cfg`
-has `visibility = "public"` as a guardrail.
+`VMBLauncher.exe upload` (called by `ship.ps1`) aborts with an error if a
+mod's `itemV2.cfg` has `visibility = "public"` and `--allow-public` was not
+passed, as a guardrail.
 
 ### Workshop upload verification: `workshop_log.txt` is source of truth
 
@@ -586,6 +587,31 @@ manually subscribe via
 
 See also the `vmb create`-based path, which scaffolds the preview
 automatically but has its own delete-on-failure quirk.
+
+### itemV2.cfg format reference (merged from DEVELOPMENT.md, issue #432)
+
+```ini
+title = "Tweaker: Weapons";
+description = "Weapon unlock and runtime experimentation for Vermintide 2. Requires VMF.";
+preview = "preview.jpg";
+content = "bundleV2";
+language = "english";
+visibility = "private";
+published_id = 3712896117L;
+apply_for_sanctioned_status = false;
+tags = [ ];
+```
+
+- `preview` and `content` resolve RELATIVE to the cfg file's parent directory;
+  `content = "bundleV2"` points at VMB's build output folder.
+- `published_id` requires the `L` suffix (64-bit integer literal).
+- Semicolons are required on every line (parsed by `libconfig.dll`).
+- `apply_for_sanctioned_status = false` is valid and should be kept.
+- For a NEW item, omit `published_id` (or set `0L;`) and omit `tags = [ ];`
+  entirely (see "Drop `tags`" above) - the tool populates both on first upload.
+- `visibility` is user-dictated; never set or change it without explicit
+  direction (see "NEVER set or change visibility" above - a wrong public flip
+  has caused an irreversible "removed from community" before).
 
 ---
 
