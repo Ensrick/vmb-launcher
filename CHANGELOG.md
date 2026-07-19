@@ -1,5 +1,20 @@
 # VMB Launcher Changelog
 
+## v0.5.6 (2026-07-18)
+
+### Added: machine-global ship/version claim gate on `upload` / `all` (monorepo issue #724)
+
+The monorepo's `tools/ship/claim.ps1` broker allocates a mod's next MOD_VERSION into a per-checkout `.ship_claims/<mod>.claim` that `ship.ps1` gates on — but only in checkouts whose `ship.ps1` postdates PR 757. A parallel session shipping from an older worktree bypassed the gate entirely (2026-07-18: ct_dev collided twice, `0.7.295-dev` and `0.7.296-dev`, the 20:00 upload clobbering the 19:17 fix build), and per-checkout `.ship_claims/` dirs can never see each other. The launcher is the one chokepoint every upload passes through regardless of checkout vintage, so the gate now lives here too:
+
+- `claim.ps1` mirrors every claim into the machine-global `%APPDATA%\VMBLauncher\ship_claims\<mod>.claim` (same base dir as settings.json).
+- `upload` and `all` evaluate that mirror BEFORE staging anything for ugc_tool (`all` checks up front, before the build — fail fast, same ordering as ship.ps1):
+  - **live claim (< 2 h) for a DIFFERENT version → REFUSED, exit 3** with the claim's version + session and the fix (`.\tools\ship\claim.ps1 -Mod <name> -Release` then re-claim, or bump MOD_VERSION to the claimed version). This is the only refusing verdict — it means two sessions are racing different versions at the same Workshop item.
+  - live claim that matches the source MOD_VERSION → one `[claim-gate] OK` line, proceed.
+  - no claim / stale (>= 2 h) / unreadable claim → WARNING (unclaimed upload, collisions possible) and proceed — a missing claim must not brick old-workflow ships.
+- New `--no-claim` flag skips the check with a loud warning (parity with `ship.ps1 -NoClaim`).
+- New `Services/ShipClaimGate.cs` (parser + evaluator, pure/no-mkdir) with xUnit pins in `tests/ShipClaimGateTests.cs` (verdict matrix incl. the exact issue-724 incident shape, ordinal version compare so `-dev` suffixes matter, stale boundary at exactly 2 h, and a no-directory-creation pin).
+- Scope note: the gate runs in the headless CLI verbs (the path every scripted ship takes). The GUI upload button does not run it.
+
 ## v0.5.5 (2026-07-05, committed 2026-07-18 as a working-tree sync)
 
 ### Added: cross-process upload serialization + staged-content guard (#344 concurrent-ship defense)

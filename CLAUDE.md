@@ -21,10 +21,13 @@ vmblauncher build    <mod-name> [--clean]     # VMB build into bundleV2/
 vmblauncher deploy   <mod-name> [--no-remote] # hash-verified copy to Workshop content folder
                                               #   THEN push to every enabled remote target
                                               #   (default: pc-b via Tailscale, auto-detected)
-vmblauncher upload   <mod-name> [--allow-public]
+vmblauncher upload   <mod-name> [--allow-public] [--no-claim]
                                               # stage + push to Workshop via ugc_tool
-vmblauncher all      <mod-name> [--clean] [--allow-public] [--no-remote]
+                                              #   checks the machine-global ship-claim mirror first
+                                              #   (see "Ship-claim gate" below)
+vmblauncher all      <mod-name> [--clean] [--allow-public] [--no-remote] [--no-claim]
                                               # build + deploy + upload, stops on first failure
+                                              #   same ship-claim check, run before the build
 vmblauncher help                              # also: --help, -h
 ```
 
@@ -202,6 +205,36 @@ When to bypass:
 
 - `--no-remote` — one-off, local-only deploy. Useful when iterating on something the remote PC doesn't need (e.g. a UI-only fix while testing in PC-A's keep).
 - Disable a target without removing it — flip `Enabled` to `false` in `settings.json`.
+
+## Ship-claim gate (machine-global, monorepo issue #724)
+
+`upload` and `all` (v0.5.6+) evaluate the machine-global ship/version claim
+mirror at `%APPDATA%\VMBLauncher\ship_claims\<mod_folder_name>.claim` BEFORE
+staging anything for ugc_tool (`all` checks up front, before the build). The
+monorepo's `tools/ship/claim.ps1` writes that mirror on every claim acquire and
+removes it on `-Release`; `tools/ship/CLAIMS.md` is the owner doc.
+
+Why the launcher enforces it: `ship.ps1`'s own claim gate only exists in
+checkouts whose `ship.ps1` postdates monorepo PR 757, and each worktree has its
+own repo-local `.ship_claims/` — a parallel session shipping from an older
+worktree bypassed the gate entirely and collided ct_dev twice on 2026-07-18
+(`0.7.295-dev`, `0.7.296-dev`). The launcher is the one chokepoint every upload
+passes through regardless of checkout vintage.
+
+Verdicts (the compared value is the claim's `version` vs the MOD_VERSION parsed
+from the mod's main lua):
+
+| Claim state | Behavior |
+|---|---|
+| Live (< 2 h), version differs | **REFUSE, exit 3** — names the claim's version + session and the fix (`.\tools\ship\claim.ps1 -Mod <name> -Release` then re-claim, or bump MOD_VERSION to the claimed version). Two sessions are racing different versions. |
+| Live, version matches | One `[claim-gate] OK` line; proceed. |
+| No claim / stale (>= 2 h) / unreadable | WARNING (unclaimed upload, collisions possible); proceed. Missing claims must not brick old-workflow ships. |
+| `--no-claim` passed | Check skipped with a loud warning (parity with `ship.ps1 -NoClaim`). Only for solo-session machines. |
+
+The gate lives in the headless CLI verbs (`Cli/Commands.cs` →
+`CmdShared.ShipClaimCheck`, evaluator in `Services/ShipClaimGate.cs`); the GUI
+upload button does not run it. It never creates the claims directory — only
+`claim.ps1` writes there.
 
 ## Preflight gates
 

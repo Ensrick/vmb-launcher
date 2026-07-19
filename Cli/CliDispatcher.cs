@@ -94,15 +94,21 @@ VERBS
                                     then push to every enabled remote target in
                                     settings.json (default: pc-b via Tailscale, auto-detected).
                                     --no-remote skips the remote push for this invocation only.
-  upload   <mod-name> [--allow-public] [--dry-run-title-rewrite]
+  upload   <mod-name> [--allow-public] [--no-claim] [--dry-run-title-rewrite]
                                     Stage and upload to Workshop via ugc_tool.
                                     Before staging, rewrites itemV2.cfg's `title` suffix to
                                     " v<MOD_VERSION>" from the mod's main lua MOD_VERSION
                                     constant. --allow-public is REQUIRED if visibility="public".
                                     --dry-run-title-rewrite prints the would-be title change
                                     and exits without writing the cfg or pushing to Workshop.
-  all      <mod-name> [--clean] [--allow-public] [--no-remote] [--dry-run-title-rewrite]
+                                    Checks the machine-global ship claim mirror
+                                    (%APPDATA%\VMBLauncher\ship_claims\) first: a LIVE claim
+                                    (<2 h) for a DIFFERENT version refuses the upload (exit 3);
+                                    a matching claim proceeds; no/stale claim warns + proceeds.
+                                    --no-claim skips the check (loudly).
+  all      <mod-name> [--clean] [--allow-public] [--no-remote] [--no-claim] [--dry-run-title-rewrite]
                                     build + deploy + upload, stopping on first failure.
+                                    Runs the same ship-claim check as `upload`, before the build.
 
 GLOBAL FLAGS
   --no-banner       Suppress the version banner (useful for piping).

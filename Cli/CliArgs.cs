@@ -18,6 +18,7 @@ public sealed class CliArgs
     public bool AllowPublic { get; init; }
     public bool NoBanner { get; init; }
     public bool NoRemote { get; init; }
+    public bool NoClaim { get; init; }
     public bool DryRunTitleRewrite { get; init; }
     public bool Help { get; init; }
     public string? ConfigPath { get; init; }
@@ -31,6 +32,7 @@ public sealed class CliArgs
         bool allowPublic = false;
         bool noBanner = false;
         bool noRemote = false;
+        bool noClaim = false;
         bool dryRunTitleRewrite = false;
         bool help = false;
         string? configPath = null;
@@ -58,6 +60,10 @@ public sealed class CliArgs
             else if (a == "--no-remote")
             {
                 noRemote = true;
+            }
+            else if (a == "--no-claim")
+            {
+                noClaim = true;
             }
             else if (a == "--dry-run-title-rewrite")
             {
@@ -94,6 +100,7 @@ public sealed class CliArgs
             AllowPublic = allowPublic,
             NoBanner = noBanner,
             NoRemote = noRemote,
+            NoClaim = noClaim,
             DryRunTitleRewrite = dryRunTitleRewrite,
             Help = help,
             ConfigPath = configPath,

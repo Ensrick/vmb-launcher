@@ -64,6 +64,70 @@ internal static class CmdShared
         Console.Error.WriteLine($"[{label}] FAILED: {outcome.Message}");
         return CliDispatcher.ExitFailed;
     }
+
+    /// <summary>
+    /// Machine-global ship/version claim gate (monorepo issue #724) — runs in the `upload` and
+    /// `all` verbs BEFORE anything is staged for ugc_tool. The monorepo's claim.ps1 mirrors every
+    /// claim into %APPDATA%\VMBLauncher\ship_claims\; because the launcher is the one chokepoint
+    /// every upload passes through, this check holds even when the invoking checkout's ship.ps1
+    /// predates the claim gate (the worktree bypass that collided ct_dev twice on 2026-07-18).
+    ///
+    /// Returns null to proceed, or an exit code to abort:
+    ///   - live claim, version != source MOD_VERSION  → refuse, exit 3 (two sessions racing
+    ///     different versions at the same Workshop item);
+    ///   - live claim, version matches                → one OK line, proceed;
+    ///   - no claim / stale (≥2 h) / unreadable claim → WARN and proceed (a missing claim must
+    ///     not brick old-workflow ships);
+    ///   - --no-claim                                 → skip entirely, loudly.
+    /// </summary>
+    public static int? ShipClaimCheck(CliArgs args, ModInfo mod)
+    {
+        if (args.NoClaim)
+        {
+            Console.Error.WriteLine($"[claim-gate] WARNING: --no-claim — SKIPPING the machine-global ship/version claim check for '{mod.Name}'. Only safe when NO other session is shipping on this machine (issue #724).");
+            return null;
+        }
+
+        string sourceVersion;
+        try
+        {
+            sourceVersion = TitleVersionSync.ReadModVersion(TitleVersionSync.ResolveModLuaPath(mod));
+        }
+        catch (Exception ex)
+        {
+            // The upload path itself aborts on an unparseable MOD_VERSION (TitleVersionSync.SyncTitle)
+            // with the canonical error — don't duplicate the failure here, just note the gate couldn't run.
+            Console.Error.WriteLine($"[claim-gate] WARNING: couldn't read MOD_VERSION for the claim check ({ex.Message}) — proceeding; the upload's own title-version sync will surface this properly.");
+            return null;
+        }
+
+        var eval = ShipClaimGate.Evaluate(ShipClaimGate.DefaultClaimsDir(), mod.Name, sourceVersion, DateTime.UtcNow);
+        switch (eval.Verdict)
+        {
+            case ShipClaimGate.Verdict.Match:
+                Console.WriteLine($"[claim-gate] OK — live claim for '{mod.Name}' matches v{sourceVersion} (session {eval.Claim!.Session}).");
+                return null;
+
+            case ShipClaimGate.Verdict.Mismatch:
+                Console.Error.WriteLine(
+                    $"[claim-gate] REFUSING upload of '{mod.Name}' v{sourceVersion}: another session holds a live claim for v{eval.Claim!.Version} " +
+                    $"(session {eval.Claim.Session}, {eval.AgeHours:0.00} h old). Two sessions are racing different versions at the same Workshop item (issue #724). " +
+                    $"Fix: .\\tools\\ship\\claim.ps1 -Mod {mod.Name} -Release then re-claim, or bump MOD_VERSION to the claimed version.");
+                return CliDispatcher.ExitPreflight;
+
+            case ShipClaimGate.Verdict.Stale:
+                Console.Error.WriteLine($"[claim-gate] WARNING: claim for '{mod.Name}' is STALE ({eval.AgeHours:0.00} h ≥ {ShipClaimGate.StaleHours} h) — treating as unclaimed. Version collisions with parallel sessions are possible; claim first: .\\tools\\ship\\claim.ps1 -Mod {mod.Name}");
+                return null;
+
+            case ShipClaimGate.Verdict.Unreadable:
+                Console.Error.WriteLine($"[claim-gate] WARNING: claim file for '{mod.Name}' exists but is unreadable ({eval.Detail}) — proceeding as unclaimed.");
+                return null;
+
+            default: // NoClaim
+                Console.Error.WriteLine($"[claim-gate] WARNING: no live claim for '{mod.Name}' — this upload is UNCLAIMED and version collisions with parallel sessions are possible. Claim first: .\\tools\\ship\\claim.ps1 -Mod {mod.Name}");
+                return null;
+        }
+    }
 }
 
 // --- list -----------------------------------------------------------------------------------
@@ -204,6 +268,10 @@ internal static class UploadCommand
             return CliDispatcher.ExitBadUsage;
         }
 
+        // Machine-global ship/version claim gate (issue #724) — before staging/ugc_tool.
+        var claimAbort = CmdShared.ShipClaimCheck(args, mod);
+        if (claimAbort.HasValue) return claimAbort.Value;
+
         var runner = new ModRunner(settings, Console.WriteLine);
         var outcome = runner.UploadAsync(mod, allowPublic: args.AllowPublic, dryRunTitleRewrite: args.DryRunTitleRewrite, ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(outcome, "upload");
@@ -230,6 +298,12 @@ internal static class AllCommand
             Console.Error.WriteLine($"vmblauncher: {mod.Name} has visibility=\"public\". Re-run with --allow-public to confirm.");
             return CliDispatcher.ExitBadUsage;
         }
+
+        // Machine-global ship/version claim gate (issue #724). Checked up front so a mismatched
+        // claim fails FAST (before the build), mirroring ship.ps1's gate-before-build ordering;
+        // the compared values (claim version vs source MOD_VERSION) can't change during the build.
+        var claimAbort = CmdShared.ShipClaimCheck(args, mod);
+        if (claimAbort.HasValue) return claimAbort.Value;
 
         var runner = new ModRunner(settings, Console.WriteLine);
         var b = runner.BuildAsync(mod, clean: args.Clean, ct: default).GetAwaiter().GetResult();
