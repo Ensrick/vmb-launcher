@@ -10,6 +10,13 @@ public sealed class ModRunner
     private readonly Settings _settings;
     private readonly Action<string> _log;
 
+    // Cross-process upload lock (issue #344). Named system-wide so two launcher PROCESSES serialize
+    // around the SINGLE shared <SDK>/ugc_uploader/sample_item/ staging dir. It is a Semaphore, not a
+    // Mutex — see the rationale at the acquisition site (Mutex thread-affinity breaks across the
+    // `await` on ugc_tool, so ReleaseMutex would throw on the continuation thread).
+    private const string UploadLockName = @"Global\VMBLauncher_ugc_upload";
+    private static readonly TimeSpan UploadLockTimeout = TimeSpan.FromMinutes(5);
+
     public ModRunner(Settings settings, Action<string> log)
     {
         _settings = settings;
@@ -211,41 +218,97 @@ public sealed class ModRunner
             }
         }
 
-        // Stage the mod into <sdk>/ugc_uploader/sample_item/ and invoke ugc_tool from the
-        // ugc_uploader directory with a relative cfg path — verbatim match for the SDK's own
-        // upload.bat ("ugc_tool -c sample_item/item.cfg") and for the maintainer's legacy
-        // old-backup/upload.ps1. Custom staging folders + absolute cfg paths (v0.2.6) produce
-        // "generic failure (probably empty content directory)" 0x2 on at least one user's setup.
-        StagedUpload staged;
-        try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
-        catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
-        L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");
+        // --- Cross-process upload serialization + staged-content guard (issue #344) --------------
+        // Two concurrent launcher processes ("concurrent ship") share the SINGLE staging dir
+        // <SDK>/ugc_uploader/sample_item/. In the 2026-07-05 incident, session B's Stage() overwrote
+        // session A's staged content BETWEEN A's stage and A's ugc_tool push, so A's upload pushed
+        // B's bundle onto A's Workshop item; A's post-upload cfg write-back then read B's
+        // published_id out of the shared staged cfg and stamped it into A's itemV2.cfg (the id-stomp).
+        // The v0.5.4 crossed-id guard validates the staged CFG id but NOT the staged CONTENT, so it
+        // can't catch a same-target content swap. Two defenses:
+        //   (a) a system-wide lock held around the ENTIRE stage -> ugc_tool -> cfg-write-back window
+        //       so two launcher processes serialize and B can't touch the staging dir mid-ship;
+        //   (b) a staged-content ownership check (inside the lock, right after Stage) verifying the
+        //       staged content/ dir carries THIS mod's <name>.mod and no foreign one.
+        // The cfg write-back MUST stay inside the lock — it reads the shared staged cfg, the stomp vector.
+        //
+        // The lock is a NAMED SEMAPHORE, not a Mutex: ugc_tool runs behind `await`, so the release in
+        // `finally` can land on a different thread than the acquire, and Mutex.ReleaseMutex() throws
+        // when released off the owning thread. A named semaphore (max count 1) is the cross-process
+        // equivalent without thread affinity. Trade-off vs a Mutex: no AbandonedMutexException on a
+        // crashed holder — but the 5-minute acquire timeout bounds any stuck lock to a clear error,
+        // and once all launcher processes exit the kernel object resets.
+        Semaphore uploadLock;
+        try { uploadLock = new Semaphore(1, 1, UploadLockName); }
+        catch (Exception ex) { return new RunOutcome(false, $"[upload] couldn't create the cross-process upload lock: {ex.Message}"); }
 
-        // Issue #344 crossed-published_id guard. The staged cfg is EXACTLY what ugc_tool pushes,
-        // so read the published_id from it (not from mod.PublishedId) — in the incident the id was
-        // correct at ship-start but stomped mid-ship, so a repo-level preflight could miss it; the
-        // guard must read the id at the moment we act. If that id maps to a local Workshop folder
-        // owned by a different mod, ugc_tool would push THIS mod's content onto the OTHER mod's
-        // item (an irreversible hijack). Refuse before invoking ugc_tool.
-        var stagedPublishedId = ModDiscovery.ExtractPublishedId(File.ReadAllText(staged.CfgPath));
-        var uploadGuard = CheckWorkshopIdOwnership(stagedPublishedId, mod, "upload");
-        if (!uploadGuard.Ok) return uploadGuard;
-
-        var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
-        var uploaderDir = Path.GetDirectoryName(_settings.UgcToolPath!)!.Replace('\\', '/');
-        var relativeCfgArg = $"{UploadStager.StagingFolderName}/{UploadStager.StagedCfgFileName}";
-        var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", relativeCfgArg, "-x" }, uploaderDir, L, ct);
-        if (result.ExitCode != 0)
-            return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
-
-        // If this was a first upload, ugc_tool wrote the new published_id into the staged cfg.
-        // Propagate it back to the mod's actual cfg so subsequent uploads target the same item.
+        var acquired = false;
         try
         {
-            if (UploadStager.PropagatePublishedIdBack(staged, mod))
-                L("[upload] new Workshop ID written back into your mod's itemV2.cfg");
+            try { acquired = uploadLock.WaitOne(UploadLockTimeout); }
+            catch (AbandonedMutexException) { acquired = true; } // semaphores don't raise this; belt-and-suspenders
+            if (!acquired)
+                return new RunOutcome(false, $"[upload] another VMBLauncher upload is in progress (upload lock held > {UploadLockTimeout.TotalMinutes:0} min). Concurrent uploads share one staging dir and can cross content (issue #344) — wait for the other ship to finish, then retry.");
+
+            // Stage the mod into <sdk>/ugc_uploader/sample_item/ and invoke ugc_tool from the
+            // ugc_uploader directory with a relative cfg path — verbatim match for the SDK's own
+            // upload.bat ("ugc_tool -c sample_item/item.cfg") and for the maintainer's legacy
+            // old-backup/upload.ps1. Custom staging folders + absolute cfg paths (v0.2.6) produce
+            // "generic failure (probably empty content directory)" 0x2 on at least one user's setup.
+            StagedUpload staged;
+            try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
+            catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
+            L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");
+
+            // Guard (b): the staged content/ dir MUST carry exactly this mod's <name>.mod. A foreign
+            // .mod (or none) means another process's Stage() clobbered ours mid-ship — refuse before
+            // ugc_tool pushes the wrong bundle onto this mod's item.
+            var stagedContentDir = Path.Combine(staged.StagingDir, "content");
+            var (stagedVerdict, stagedForeign) = InspectStagedContent(stagedContentDir, mod.Name);
+            if (stagedVerdict != StagedContentOwnership.OwnedByMod)
+            {
+                var found = stagedVerdict == StagedContentOwnership.ForeignOwner
+                    ? $"'{stagedForeign}.mod'"
+                    : "no .mod entry";
+                return new RunOutcome(false, $"[stage-guard] REFUSING upload: staged content contains {found}, expected '{mod.Name}.mod' - concurrent-ship staging collision (issue #344).");
+            }
+            L($"[stage-guard] staged content owned by '{mod.Name}.mod' - ok");
+
+            // Issue #344 crossed-published_id guard. The staged cfg is EXACTLY what ugc_tool pushes,
+            // so read the published_id from it (not from mod.PublishedId) — in the incident the id was
+            // correct at ship-start but stomped mid-ship, so a repo-level preflight could miss it; the
+            // guard must read the id at the moment we act. If that id maps to a local Workshop folder
+            // owned by a different mod, ugc_tool would push THIS mod's content onto the OTHER mod's
+            // item (an irreversible hijack). Refuse before invoking ugc_tool.
+            var stagedPublishedId = ModDiscovery.ExtractPublishedId(File.ReadAllText(staged.CfgPath));
+            var uploadGuard = CheckWorkshopIdOwnership(stagedPublishedId, mod, "upload");
+            if (!uploadGuard.Ok) return uploadGuard;
+
+            var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
+            var uploaderDir = Path.GetDirectoryName(_settings.UgcToolPath!)!.Replace('\\', '/');
+            var relativeCfgArg = $"{UploadStager.StagingFolderName}/{UploadStager.StagedCfgFileName}";
+            var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", relativeCfgArg, "-x" }, uploaderDir, L, ct);
+            if (result.ExitCode != 0)
+                return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
+
+            // If this was a first upload, ugc_tool wrote the new published_id into the staged cfg.
+            // Propagate it back to the mod's actual cfg so subsequent uploads target the same item.
+            // Stays inside the lock: it reads the shared staged cfg — the id-stomp vector.
+            try
+            {
+                if (UploadStager.PropagatePublishedIdBack(staged, mod))
+                    L("[upload] new Workshop ID written back into your mod's itemV2.cfg");
+            }
+            catch (Exception ex) { L($"[upload] WARNING: couldn't propagate published_id: {ex.Message}"); }
         }
-        catch (Exception ex) { L($"[upload] WARNING: couldn't propagate published_id: {ex.Message}"); }
+        finally
+        {
+            if (acquired)
+            {
+                try { uploadLock.Release(); } catch { /* releasing a semaphore we own can't legitimately fail; swallow so a stray throw can't mask the real outcome */ }
+            }
+            uploadLock.Dispose();
+        }
 
         L("[upload] ugc_tool reported finished. VERIFY the Workshop page shows updated file size -- ugc_tool prints success even on transfer failures.");
         return new RunOutcome(true, "Upload finished (verify size on Workshop page)");
@@ -346,6 +409,48 @@ public sealed class ModRunner
         if (modFiles.Any(f => string.Equals(Path.GetFileNameWithoutExtension(f), modName, StringComparison.OrdinalIgnoreCase)))
             return null;
         return Path.GetFileNameWithoutExtension(modFiles[0]);
+    }
+
+    /// <summary>Issue #344 staged-content ownership verdict. See <see cref="InspectStagedContent"/>.</summary>
+    public enum StagedContentOwnership
+    {
+        /// <summary>The staged content/ dir carries this mod's own <c>&lt;name&gt;.mod</c> (safe to upload).</summary>
+        OwnedByMod,
+        /// <summary>The staged content/ dir carries a DIFFERENT mod's <c>.mod</c> — a staging collision.</summary>
+        ForeignOwner,
+        /// <summary>The staged content/ dir carries NO <c>.mod</c> entry at all (empty / clobbered mid-copy).</summary>
+        NoModEntry,
+    }
+
+    /// <summary>
+    /// Issue #344 staged-content guard. After <c>UploadStager.Stage</c>, the staged
+    /// <c>&lt;SDK&gt;/ugc_uploader/sample_item/content/</c> dir must carry EXACTLY this mod's
+    /// <c>&lt;name&gt;.mod</c> entry (VMB names it after the mod dir). A concurrent launcher process
+    /// sharing that single staging dir can overwrite it between stage and push, so the content
+    /// ugc_tool uploads may belong to a different mod even when the staged cfg id is still ours — the
+    /// crossed-id guard can't see a same-target content swap. Returns:
+    /// <list type="bullet">
+    /// <item><see cref="StagedContentOwnership.OwnedByMod"/> — our <c>&lt;modName&gt;.mod</c> is present and no foreign one is;</item>
+    /// <item><see cref="StagedContentOwnership.ForeignOwner"/> — a different mod's <c>.mod</c> is present (out param = its basename);</item>
+    /// <item><see cref="StagedContentOwnership.NoModEntry"/> — no <c>.mod</c> entry at all (empty / missing dir).</item>
+    /// </list>
+    /// Only <see cref="StagedContentOwnership.OwnedByMod"/> is safe to upload.
+    /// </summary>
+    public static (StagedContentOwnership Verdict, string? ForeignOwner) InspectStagedContent(string stagedContentDir, string modName)
+    {
+        var foreign = FindForeignModOwner(stagedContentDir, modName);
+        if (foreign != null) return (StagedContentOwnership.ForeignOwner, foreign);
+
+        // FindForeignModOwner returns null both when the dir is ours AND when it has no .mod at all.
+        // Distinguish: the staged content is only safe when OUR <name>.mod is actually present.
+        var hasOwn = !string.IsNullOrEmpty(stagedContentDir)
+            && Directory.Exists(stagedContentDir)
+            && Directory.EnumerateFiles(stagedContentDir).Any(f =>
+                   string.Equals(Path.GetExtension(f), ".mod", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(Path.GetFileNameWithoutExtension(f), modName, StringComparison.OrdinalIgnoreCase));
+        return hasOwn
+            ? (StagedContentOwnership.OwnedByMod, null)
+            : (StagedContentOwnership.NoModEntry, null);
     }
 
     private static string HashFile(string path)

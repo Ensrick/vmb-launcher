@@ -46,13 +46,15 @@ Workshop content folder (deploy), and scans `workshop_log.txt` for a fresh
 `Uploaded new content` / `No content change detected` line for the mod's
 `published_id` (upload). Flags mirror the launcher: `-AllowPublic`, `-NoRemote`,
 plus `-SkipGitHub` to skip the GitHub release. It fails loudly (non-zero exit) on
-the first problem, then prints the restart reminder below.
+the first problem, then prints the test-refresh reminder below. Before invoking
+the launcher, it runs `qa/run_all.ps1 -Quick -SkipLua` (including the offline
+Lua 5.1 unit suite) and target-mod lint as a blocking headless preflight. A
+preflight failure occurs before build, deploy, or upload.
 
-**After ANY successful ship the author MUST fully restart Steam** (tray icon ->
-Exit, reopen) before launching the game. Steam re-downloads a SELF-AUTHORED
-Workshop item only on a full STEAM restart — NOT on a game relaunch, and NOT via
-`deploy` (Steam reconciles the deploy folder back to its cached manifest if the
-client cache is behind). Confirm the running build via the newest
+**Test refresh (user ruling 2026-07-13):** the author on PC-A tests the
+hash-verified local deploy and does not need to restart Steam. Volunteer testers
+refresh via the dev collection by unsubscribing/resubscribing the affected mods.
+For every tester, confirm the running build via the newest
 `%APPDATA%\Fatshark\Vermintide 2\console_logs\` log's `[<id>:LOAD] vX.Y.Z` line.
 
 The launcher verbs below remain the primitives `ship.ps1` is built on, and the

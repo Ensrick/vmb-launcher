@@ -1,5 +1,18 @@
 # VMB Launcher Changelog
 
+## v0.5.5 (2026-07-05, committed 2026-07-18 as a working-tree sync)
+
+### Added: cross-process upload serialization + staged-content guard (#344 concurrent-ship defense)
+
+Two concurrent launcher processes share the SINGLE staging dir `<SDK>/ugc_uploader/sample_item/`. In the 2026-07-05 incident, session B's `Stage()` overwrote session A's staged content BETWEEN A's stage and A's ugc_tool push, so A pushed B's bundle onto A's Workshop item; A's post-upload cfg write-back then read B's `published_id` out of the shared staged cfg and stamped it into A's `itemV2.cfg` (the id-stomp). The v0.5.4 crossed-id guard validates the staged CFG id but not the staged CONTENT, so a same-target content swap slipped it. Two defenses in `ModRunner.UploadAsync`:
+
+- **Named-semaphore upload lock** `Global\VMBLauncher_ugc_upload` (max count 1, 5-min acquire timeout) held around the entire stage → ugc_tool → cfg-write-back window, so two launcher PROCESSES serialize. A Semaphore, not a Mutex: ugc_tool runs behind `await`, and `Mutex.ReleaseMutex()` throws when the continuation lands on a different thread.
+- **Staged-content ownership check** (`InspectStagedContent`, inside the lock, right after `Stage()`): the staged `content/` dir must carry exactly this mod's `<name>.mod` — a foreign `.mod` (or none) refuses with `[stage-guard] REFUSING upload: … concurrent-ship staging collision (issue #344)`.
+
+New xUnit pins in `tests/StagedContentGuardTests.cs`. Also syncs `CLAUDE.md` with the monorepo's 2026-07-13 test-refresh ruling (author tests the hash-verified local deploy without a Steam restart; volunteer testers refresh via the dev collection).
+
+*This entry was committed 2026-07-18 as a sync of a 2026-07-05 working tree that was never committed (same class of gap as the v0.3.1 → v0.5.4 sync, 3f12987). The v0.5.5 binary was never published; v0.5.6 is the first published build carrying these guards.*
+
 ## v0.5.4 (2026-07-05)
 
 ### Added: crossed-`published_id` guard on `deploy` / `upload` (#344 — hijack + double-install prevention)
