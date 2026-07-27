@@ -120,7 +120,12 @@ cd vmb-launcher
 .\publish.ps1
 ```
 
-`publish.ps1` runs the test suite first, then builds. Output: `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe` (~60 MB).
+`publish.ps1` runs the test suite, builds, and runs the headless smoke suite.
+It opens no windows by default. Pass `-OpenOutput` only when you explicitly
+want Explorer to select the resulting
+`bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe` (~60 MB).
+If a launcher process holds that file, the default fails closed; only an
+explicit human `-ForceStopLauncher` may terminate it.
 
 For development:
 ```powershell
@@ -132,12 +137,27 @@ dotnet run -c Debug   # launch the GUI in debug mode
 
 124 unit tests across all service classes (run via `test.ps1`). The downloader is fully tested with a mocked `HttpMessageHandler`, so it never hits the live GitHub API in CI.
 
-Plus an end-to-end **headless smoke suite** at `tests/headless_smoke.ps1` that exercises the real binary against the real filesystem: every verb, every error path, exit codes through cmd's pipe, truncated-pipe handling, settings auto-detect, and GUI fallback. Runs automatically as part of `publish.ps1`.
+Plus an end-to-end **headless smoke suite** at `tests/headless_smoke.ps1` that
+exercises the real binary against the real filesystem: every verb, every error
+path, exit codes through cmd's pipe, truncated-pipe handling, and settings
+auto-detect. It cannot launch GUI processes or execute `build`, `deploy`,
+`upload`, or `all`, and runs automatically as part of `publish.ps1`. Every
+invocation uses an isolated temporary settings copy and the suite proves the
+real default settings bytes remain unchanged.
+
+GUI routing and real local build/deploy integration have separate explicit
+opt-in suites. They never run from `publish.ps1`, `test.ps1`, CI, or agent
+verification:
 
 ```powershell
-.\test.ps1                        # unit tests
-.\tests\headless_smoke.ps1        # end-to-end against Debug build
+.\test.ps1                                      # unit tests
+.\tests\headless_smoke.ps1                      # read-only Debug-binary checks
+.\tests\gui_smoke.ps1 -Interactive              # visible windows; human only
+.\tests\action_smoke.ps1 -IntegrationActions    # mutates local build/deploy state
 ```
+
+`tests/check_noninteractive_contract.ps1` is the planted-failure guard that
+keeps the default paths noninteractive.
 
 ## Settings file location
 

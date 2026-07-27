@@ -5,15 +5,23 @@
 # ~70 MB self-extracting exe; ~30-40 MB after compression. Cold-start ~1-2s.
 #
 # Usage:
-#   .\publish.ps1                # build + opens the output folder
-#   .\publish.ps1 -SkipOpen      # build only
+#   .\publish.ps1                # tests + build + headless smoke; opens nothing
+#   .\publish.ps1 -OpenOutput    # same, then explicitly opens the output folder
+#   .\publish.ps1 -ForceStopLauncher # explicitly terminate a held launcher
 
 param(
+    [switch]$OpenOutput,
+    [switch]$ForceStopLauncher,
+    # Backward-compatible no-op. The default became noninteractive in #1025.
     [switch]$SkipOpen
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+if ($OpenOutput -and $SkipOpen) {
+    throw "-OpenOutput and the deprecated -SkipOpen switch cannot be combined."
+}
 
 # Auto-stop any running VMBLauncher.exe before publishing.
 #
@@ -30,9 +38,15 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 # to relaunch the binary in the window between an early check and the actual
 # overwrite. Burned 2026-05-24: first attempt put the check at script start
 # and a fresh VMBLauncher PID appeared 2 minutes later, before publish ran.
-function Stop-HeldLauncher {
+function Prepare-LauncherPublish {
+    param([switch]$AllowStop)
+
     $existing = Get-Process VMBLauncher -ErrorAction SilentlyContinue
     if ($existing) {
+        if (-not $AllowStop) {
+            $held = ($existing | ForEach-Object { "PID $($_.Id)" }) -join ', '
+            throw "VMBLauncher is running ($held). Close it before publishing, or explicitly pass -ForceStopLauncher."
+        }
         foreach ($p in $existing) {
             Write-Host "Stopping held VMBLauncher.exe (PID $($p.Id), started $($p.StartTime))..." -ForegroundColor Yellow
             Stop-Process -Id $p.Id -Force
@@ -50,7 +64,7 @@ Write-Host "Running tests..." -ForegroundColor Cyan
 Write-Host "Publishing VMBLauncher (self-contained, single-file, win-x64)..." -ForegroundColor Cyan
 Push-Location $root
 try {
-    Stop-HeldLauncher
+    Prepare-LauncherPublish -AllowStop:$ForceStopLauncher
     dotnet publish -c Release -r win-x64 --self-contained true `
         /p:PublishSingleFile=true `
         /p:IncludeNativeLibrariesForSelfExtract=true `
@@ -71,9 +85,10 @@ if (-not (Test-Path $exe)) {
 $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host "OK -- $exe ($size MB)" -ForegroundColor Green
 
-# End-to-end headless smoke test against the freshly-built release binary. This catches
-# regressions the unit suite can't see (subsystem flag, FreeConsole timing, real VMB build
-# integration). Costs ~15s. Pass -SkipSmoke to bypass for quick iterations.
+# End-to-end headless smoke test against the freshly-built release binary. This
+# suite is contractually noninteractive and nonmutating. GUI and real
+# build/deploy action tests live in explicit opt-in suites and are never called
+# from publish.ps1.
 $smoke = Join-Path $root 'tests\headless_smoke.ps1'
 if (Test-Path $smoke) {
     Write-Host "Running headless smoke against published binary..." -ForegroundColor Cyan
@@ -81,6 +96,6 @@ if (Test-Path $smoke) {
     if ($LASTEXITCODE -ne 0) { throw "Headless smoke failed (exit $LASTEXITCODE)" }
 }
 
-if (-not $SkipOpen) {
+if ($OpenOutput) {
     Start-Process explorer.exe "/select,`"$exe`""
 }

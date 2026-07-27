@@ -1,5 +1,28 @@
 # VMB Launcher Changelog
 
+## v0.5.8 (2026-07-27)
+
+### Fixed: default verification is noninteractive and nonmutating
+
+- `publish.ps1`, `test.ps1`, and `tests/headless_smoke.ps1` no longer launch
+  WPF, Explorer, or any other interactive process by default.
+- The default headless smoke no longer executes `build`, `deploy`, `upload`, or
+  `all`. Real local build/deploy coverage moved to
+  `tests/action_smoke.ps1 -IntegrationActions`; GUI routing coverage moved to
+  `tests/gui_smoke.ps1 -Interactive`. Neither suite is called by publish,
+  tests, CI, or agent verification.
+- `publish.ps1` opens Explorer only with explicit `-OpenOutput`.
+  The former `-SkipOpen` switch remains a backward-compatible no-op.
+- Default `publish.ps1` fails closed when any VMBLauncher process holds the
+  output binary. Termination requires explicit `-ForceStopLauncher`; routine
+  verification no longer kills a GUI or in-flight CLI action.
+- Default headless smoke clones launcher settings into an isolated temporary
+  config, passes that path to every invocation, compares the real default
+  settings bytes before/after, and removes the temporary config in `finally`.
+- `tests/check_noninteractive_contract.ps1` runs from `test.ps1` and includes
+  planted failures for a default `Start-Process`, mutating launcher verb,
+  machine-config mutation risk, default force-stop, and default Explorer launch.
+
 ## v0.5.7 (2026-07-26)
 
 ### Changed: publication requires an independently downloaded GitHub receipt

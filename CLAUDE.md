@@ -633,13 +633,30 @@ tags = [ ];
 
 ```powershell
 cd C:\Users\danjo\source\repos\vermintide-2-tweaker\tools\vmb-launcher
-.\publish.ps1                  # tests + release build, opens explorer at the output
-.\publish.ps1 -SkipOpen        # tests + release build, no explorer
+.\publish.ps1                  # tests + release build + headless smoke; opens nothing
+.\publish.ps1 -OpenOutput      # same, then explicitly opens Explorer
 ```
 
 The release binary lands at `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe`. The user typically copies it to `~/Downloads/` for distribution.
 
-**Headless-first rebuild guarantee.** `publish.ps1` auto-stops any held `VMBLauncher.exe` processes (GUI or in-flight CLI verb) before invoking `dotnet publish`. Without this, the single-file publish fails with `MSB4018: The process cannot access the file ... because it is being used by another process` and the doctrine "no GUI interface should be necessary" breaks down. Burned 2026-05-24 in the AI Takeover fix loop — the v0.4.x binary couldn't be rebuilt because the user had the GUI open from a separate session. Now the script terminates held instances itself and waits for the file lock to release (max 10 s) before publishing.
+**Headless-first rebuild guarantee.** Default `publish.ps1`, `test.ps1`, and
+`tests/headless_smoke.ps1` never launch WPF or Explorer and never execute
+`build`, `deploy`, `upload`, or `all`. GUI routing lives only in
+`tests/gui_smoke.ps1 -Interactive`; real local build/deploy integration lives
+only in `tests/action_smoke.ps1 -IntegrationActions`. Never run either opt-in
+suite from agent, headless, CI, or publication verification.
+`tests/check_noninteractive_contract.ps1` guards this split with planted-failure
+coverage and runs from `test.ps1`.
+
+The default headless smoke clones launcher settings to a temporary isolated
+config, passes `--config` on every invocation, proves the real default settings
+bytes did not change, and removes the copy in `finally`.
+
+`publish.ps1` fails closed if a VMBLauncher process (GUI or in-flight CLI verb)
+holds the output binary. A human may explicitly pass `-ForceStopLauncher` to
+terminate it; routine agent/default verification must not. This prevents a
+rebuild from interrupting a user or another launcher action while retaining an
+opt-in escape for the single-file `MSB4018` lock case.
 
 ## Inputs Claude is most likely to be asked for
 
