@@ -58,11 +58,16 @@ public static class TitleVersionSync
         }
 
         var text = File.ReadAllText(luaPath);
+        return ReadModVersionText(text, luaPath);
+    }
+
+    internal static string ReadModVersionText(string text, string sourceLabel)
+    {
         var m = ModVersionRegex.Match(text);
         if (!m.Success)
         {
             throw new InvalidOperationException(
-                $"MOD_VERSION constant not found in {luaPath}. Per PROJECT_STANDARDS §6.1 every mod must define `local MOD_VERSION = \"X.Y.Z\"` near the top of its main lua. Cannot proceed with title-version sync.");
+                $"MOD_VERSION constant not found in {sourceLabel}. Per PROJECT_STANDARDS §6.1 every mod must define `local MOD_VERSION = \"X.Y.Z\"` near the top of its main lua. Cannot proceed with title-version sync.");
         }
 
         return m.Groups[1].Value;
@@ -147,6 +152,23 @@ public static class TitleVersionSync
             mod.Title = result.NewTitle;
         }
 
+        return result;
+    }
+
+    /// <summary>
+    /// Publication receipts bind the exact committed cfg bytes, so the upload
+    /// boundary must never "helpfully" rewrite the source after review. Verify
+    /// the title suffix without mutating either the cfg or the in-memory model.
+    /// </summary>
+    internal static TitleRewriteResult ValidateTitleForPublication(ModInfo mod)
+    {
+        var result = SyncTitle(mod, dryRun: true);
+        if (result.Changed)
+        {
+            throw new InvalidOperationException(
+                $"Committed itemV2.cfg title '{result.OldTitle}' is not synchronized with MOD_VERSION; " +
+                $"the reviewed title must be '{result.NewTitle}' before publication.");
+        }
         return result;
     }
 

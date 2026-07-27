@@ -213,6 +213,33 @@ public class TitleVersionSyncTests
     }
 
     [Fact]
+    public void ValidateTitleForPublication_AcceptsExactCommittedTitleWithoutWriting()
+    {
+        using var fake = new FakeMod("mymod", "0.2.0-dev", "X v0.2.0-dev");
+        var before = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+
+        var result = TitleVersionSync.ValidateTitleForPublication(fake.Mod);
+
+        Assert.False(result.Changed);
+        Assert.Equal(before, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+        Assert.Equal("X v0.2.0-dev", fake.Mod.Title);
+    }
+
+    [Fact]
+    public void ValidateTitleForPublication_RejectsMismatchWithoutDirtyingReviewedCfg()
+    {
+        using var fake = new FakeMod("mymod", "0.2.0-dev", "X v0.1.0-dev");
+        var before = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            TitleVersionSync.ValidateTitleForPublication(fake.Mod));
+
+        Assert.Contains("reviewed title", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+        Assert.Equal("X v0.1.0-dev", fake.Mod.Title);
+    }
+
+    [Fact]
     public void SyncTitle_Throws_WhenModVersionMissingFromLua()
     {
         using var td = new TempDir();

@@ -29,12 +29,20 @@ public static class CliDispatcher
             PrintHelp();
             return ExitOk;
         }
+        if (parsed.Unknown.Count > 0)
+        {
+            Console.Error.WriteLine($"vmblauncher: unknown or malformed argument(s): {string.Join(", ", parsed.Unknown)}");
+            return ExitBadUsage;
+        }
 
         if (!parsed.NoBanner)
         {
             var asmVer = typeof(CliDispatcher).Assembly.GetName().Version?.ToString() ?? "?";
             Console.WriteLine($"vmblauncher {asmVer} (headless)");
         }
+
+        if (parsed.Verb == "capabilities")
+            return CapabilitiesCommand.Run();
 
         var settings = LoadSettings(parsed.ConfigPath);
         var changed = settings.AutoFillMissing();
@@ -89,26 +97,26 @@ VERBS
   list                              List all discovered mods.
   info     <mod-name>               Print cfg + bundle state for one mod.
   doctor                            Run diagnostics (same checks the GUI's first-run dialog runs).
+  capabilities                      Print machine-readable publication capabilities and schemas.
   build    <mod-name> [--clean]     VMB build the mod into bundleV2/.
   deploy   <mod-name> [--no-remote] Copy bundleV2/ into Workshop content folder (hash-verified),
                                     then push to every enabled remote target in
                                     settings.json (default: pc-b via Tailscale, auto-detected).
                                     --no-remote skips the remote push for this invocation only.
-  upload   <mod-name> [--allow-public] [--no-claim] [--dry-run-title-rewrite]
-                                    Stage and upload to Workshop via ugc_tool.
+  upload   <mod-name> [--allow-public] [--publication-receipt <path>]
+                                    Internal final Workshop mutation used by tools/ship/ship.ps1.
                                     Before staging, rewrites itemV2.cfg's `title` suffix to
                                     " v<MOD_VERSION>" from the mod's main lua MOD_VERSION
                                     constant. --allow-public is REQUIRED if visibility="public".
                                     --dry-run-title-rewrite prints the would-be title change
                                     and exits without writing the cfg or pushing to Workshop.
-                                    Checks the machine-global ship claim mirror
-                                    (%APPDATA%\VMBLauncher\ship_claims\) first: a LIVE claim
-                                    (<2 h) for a DIFFERENT version refuses the upload (exit 3);
-                                    a matching claim proceeds; no/stale claim warns + proceeds.
-                                    --no-claim skips the check (loudly).
-  all      <mod-name> [--clean] [--allow-public] [--no-remote] [--no-claim] [--dry-run-title-rewrite]
-                                    build + deploy + upload, stopping on first failure.
-                                    Runs the same ship-claim check as `upload`, before the build.
+                                    Real publication requires a short-lived GitHub-hosted receipt plus
+                                    independent clean/default-head/merged-PR/qa-gate, claim-owner,
+                                    version, cfg, and bundle-hash verification.
+  all      <mod-name> [--clean] [--allow-public] [--no-remote]
+                                    build + deploy + publication, stopping on first failure.
+                                    Publication requires the same hosted receipt as upload.
+                                    Use tools/ship/ship.ps1; a claim alone never authorizes upload.
 
 GLOBAL FLAGS
   --no-banner       Suppress the version banner (useful for piping).
@@ -124,8 +132,8 @@ EXAMPLES
   vmblauncher list
   vmblauncher info general_tweaker
   vmblauncher build general_tweaker
-  vmblauncher all general_tweaker
-  vmblauncher upload chaos_wastes_tweaker --allow-public
+  vmblauncher deploy general_tweaker
+  tools\ship\ship.ps1 -Mod general_tweaker
 """);
     }
 }

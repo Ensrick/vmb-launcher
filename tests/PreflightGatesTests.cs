@@ -103,7 +103,7 @@ public class PreflightGatesTests
         var repo = t.Path;
         // Mirror the repo layout the gate expects: <repo>/qa/check_localization.ps1 and
         // <repo>/<mod>/scripts/mods/<mod>/<mod>_{data,localization}.lua
-        CopyRepoQaScript(repo, "check_localization.ps1");
+        WriteQaScriptFixture(repo, "check_localization.ps1");
 
         var modName = "plantmod";
         var modDir = Path.Combine(repo, modName);
@@ -130,7 +130,7 @@ public class PreflightGatesTests
 
         using var t = new TempDir();
         var repo = t.Path;
-        CopyRepoQaScript(repo, "check_localization.ps1");
+        WriteQaScriptFixture(repo, "check_localization.ps1");
 
         var modName = "cleanmod";
         var modDir = Path.Combine(repo, modName);
@@ -148,20 +148,26 @@ public class PreflightGatesTests
         Assert.NotEqual(QaScriptGate.Verdict.Error, res.Verdict);
     }
 
-    // Copy the real qa script from the source tree into the temp repo so the gate has
-    // something to invoke. Walk up from the test assembly to the repo root.
-    private static void CopyRepoQaScript(string tempRepo, string scriptName)
+    // The launcher repository is intentionally standalone, so this process-boundary
+    // test owns a minimal deterministic fixture instead of searching for a sibling
+    // vermintide-2-tweaker checkout on the developer's machine.
+    private static void WriteQaScriptFixture(string tempRepo, string scriptName)
     {
-        var dir = AppContext.BaseDirectory;
-        string? found = null;
-        for (var d = new DirectoryInfo(dir); d != null; d = d.Parent)
-        {
-            var candidate = Path.Combine(d.FullName, "qa", scriptName);
-            if (File.Exists(candidate)) { found = candidate; break; }
-        }
-        if (found == null)
-            throw new FileNotFoundException($"could not locate qa/{scriptName} above {dir}");
-        Directory.CreateDirectory(Path.Combine(tempRepo, "qa"));
-        File.Copy(found, Path.Combine(tempRepo, "qa", scriptName), overwrite: true);
+        var qa = Path.Combine(tempRepo, "qa");
+        Directory.CreateDirectory(qa);
+        File.WriteAllText(Path.Combine(qa, scriptName), """
+param(
+    [string]$RepoRoot,
+    [switch]$Quiet
+)
+$bad = $false
+Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*_localization.lua' |
+    ForEach-Object {
+        $raw = [System.IO.File]::ReadAllText($_.FullName)
+        if ($raw -match '(?<!%)%(?!%)') { $bad = $true }
+    }
+if ($bad) { exit 2 }
+exit 0
+""");
     }
 }

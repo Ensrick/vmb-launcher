@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
@@ -20,7 +22,9 @@ public class UploadStagerTests
             File.WriteAllBytes(UgcToolPath, Array.Empty<byte>());
 
             ModDir = new TempDir();
-            var bundleV2 = ModDir.CreateSubdir("bundleV2");
+            var modPath = ModDir.CreateSubdir("mymod");
+            var bundleV2 = Path.Combine(modPath, "bundleV2");
+            Directory.CreateDirectory(bundleV2);
             if (withBundles)
             {
                 File.WriteAllBytes(Path.Combine(bundleV2, "abc123.mod_bundle"), new byte[] { 1, 2, 3 });
@@ -29,7 +33,7 @@ public class UploadStagerTests
             }
             if (withPreview)
             {
-                File.WriteAllBytes(Path.Combine(ModDir.Path, "item_preview.png"), new byte[] { 0x89, 0x50 });
+                File.WriteAllBytes(Path.Combine(modPath, "item_preview.png"), new byte[] { 0x89, 0x50 });
             }
 
             if (cfgContent == null)
@@ -38,13 +42,13 @@ public class UploadStagerTests
                 if (publishedId != null) cfgContent += $"published_id = {publishedId}L;\n";
                 cfgContent += "apply_for_sanctioned_status = false;\ntags = [ ];\n";
             }
-            var cfgPath = Path.Combine(ModDir.Path, "itemV2.cfg");
+            var cfgPath = Path.Combine(modPath, "itemV2.cfg");
             File.WriteAllText(cfgPath, cfgContent);
 
             Mod = new ModInfo
             {
                 Name = "mymod",
-                ModDir = ModDir.Path,
+                ModDir = modPath,
                 ItemCfgPath = cfgPath,
             };
             ModDiscovery.ParseItemCfg(Mod);
@@ -109,6 +113,34 @@ public class UploadStagerTests
     }
 
     [Fact]
+    public void Stage_rejects_preview_path_traversal()
+    {
+        var cfg = "title = \"My Mod\";\ndescription = \"desc\";\npreview = \"..\\\\outside.jpg\";\n"
+                + "content = \"bundleV2\";\nlanguage = \"english\";\nvisibility = \"private\";\n"
+                + "apply_for_sanctioned_status = false;\n";
+        using var fake = new FakeSdk(withPreview: false, cfgContent: cfg);
+        var outside = Path.Combine(fake.Mod.ModDir, "..", "outside.jpg");
+        File.WriteAllText(outside, "must-not-stage");
+
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+
+        Assert.Equal("item_preview.png", staged.PreviewName);
+        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(staged.StagingDir)!, "outside.jpg")));
+    }
+
+    [Theory]
+    [InlineData("C:outside.jpg")]
+    [InlineData("preview.jpg:alternate")]
+    [InlineData("CON")]
+    [InlineData("preview.jpg.")]
+    public void ResolvePreviewName_rejects_windows_alias_and_device_names(string configured)
+    {
+        var cfg = $"preview = \"{configured}\";";
+        var resolved = UploadStager.ResolvePreviewNameFromSourceCfg(cfg, _ => true);
+        Assert.Equal("item_preview.png", resolved);
+    }
+
+    [Fact]
     public void Stage_writes_cfg_with_relative_content_path()
     {
         using var fake = new FakeSdk();
@@ -170,68 +202,186 @@ public class UploadStagerTests
     }
 
     [Fact]
-    public void UpsertPublishedId_inserts_when_absent()
+    public void BootstrapWriteBack_ChangesOnlyAuthorizedZeroId()
     {
-        var raw = "title = \"x\";\nvisibility = \"private\";\n";
-        var got = UploadStager.UpsertPublishedId(raw, "999");
-        Assert.Contains("published_id = 999L;", got);
-        // Should sit before visibility line.
-        var idIdx = got.IndexOf("published_id");
-        var visIdx = got.IndexOf("visibility");
-        Assert.True(idIdx < visIdx);
-    }
-
-    [Fact]
-    public void UpsertPublishedId_replaces_when_present()
-    {
-        var raw = "title = \"x\";\npublished_id = 111L;\nvisibility = \"private\";\n";
-        var got = UploadStager.UpsertPublishedId(raw, "222");
-        Assert.Contains("published_id = 222L;", got);
-        Assert.DoesNotContain("published_id = 111L", got);
-    }
-
-    [Fact]
-    public void UpsertPublishedId_appends_when_no_visibility_line()
-    {
-        var raw = "title = \"x\";\n";
-        var got = UploadStager.UpsertPublishedId(raw, "777");
-        Assert.Contains("published_id = 777L;", got);
-    }
-
-    [Fact]
-    public void PropagatePublishedIdBack_writes_new_id_to_mod_cfg()
-    {
-        using var fake = new FakeSdk(publishedId: null);
+        using var fake = new FakeSdk(publishedId: "0");
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
-        // Simulate ugc_tool replacing our "published_id = 0L;" sentinel with the real id.
-        var stagedRaw = File.ReadAllText(staged.CfgPath);
-        var replaced = stagedRaw.Replace("published_id = 0L;", "published_id = 555L;");
-        File.WriteAllText(staged.CfgPath, replaced);
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        File.WriteAllText(
+            staged.CfgPath,
+            UploadStager.UpsertPublishedId(expectedStaged, "555") + "tags = [ ];\n");
+        var sourceBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
 
-        var updated = UploadStager.PropagatePublishedIdBack(staged, fake.Mod);
-        Assert.True(updated);
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, fake.Mod, expectedStaged, Sha256(sourceBytes));
 
-        var modRaw = File.ReadAllText(fake.Mod.ItemCfgPath);
-        Assert.Contains("published_id = 555L;", modRaw);
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal("555", result.PublishedId);
+        var actual = File.ReadAllText(fake.Mod.ItemCfgPath);
+        Assert.Contains("published_id = 555L;", actual);
+        Assert.Equal(
+            UploadStager.UpsertPublishedId(Encoding.UTF8.GetString(sourceBytes), "555"),
+            actual);
     }
 
     [Fact]
-    public void PropagatePublishedIdBack_skips_when_staged_id_is_zero_sentinel()
+    public void BootstrapWriteBack_RejectsMutatedSourceWithoutClobberingIt()
     {
-        // After Stage() writes "published_id = 0L;" but before ugc_tool runs, propagation should
-        // be a no-op. The 0L is our sentinel for "ugc_tool hasn't created the workshop item yet".
-        using var fake = new FakeSdk(publishedId: null);
+        using var fake = new FakeSdk(publishedId: "0");
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
-        Assert.False(UploadStager.PropagatePublishedIdBack(staged, fake.Mod));
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        var sourceHash = Sha256(File.ReadAllBytes(fake.Mod.ItemCfgPath));
+        File.WriteAllText(
+            staged.CfgPath,
+            UploadStager.UpsertPublishedId(expectedStaged, "555"));
+        File.AppendAllText(fake.Mod.ItemCfgPath, "description = \"concurrent edit\";\n");
+        var concurrentBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, fake.Mod, expectedStaged, sourceHash);
+
+        Assert.False(result.Ok);
+        Assert.Equal("555", result.PublishedId);
+        Assert.Equal(concurrentBytes, File.ReadAllBytes(fake.Mod.ItemCfgPath));
     }
 
     [Fact]
-    public void PropagatePublishedIdBack_skips_when_already_matches()
+    public void BootstrapWriteBack_RejectsDuplicateSourcePublishedIdSentinels()
     {
-        using var fake = new FakeSdk(publishedId: "999");
+        using var fake = new FakeSdk(publishedId: "0");
+        File.AppendAllText(fake.Mod.ItemCfgPath, "published_id = 0L;\n");
         var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
-        // Staged has the same id; nothing to propagate.
-        Assert.False(UploadStager.PropagatePublishedIdBack(staged, fake.Mod));
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        File.WriteAllText(
+            staged.CfgPath,
+            UploadStager.UpsertPublishedId(expectedStaged, "555"));
+        var sourceBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, fake.Mod, expectedStaged, Sha256(sourceBytes));
+
+        Assert.False(result.Ok);
+        Assert.Contains("exactly one", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+    }
+
+    [Fact]
+    public void BootstrapWriteBack_RejectsAssignedIdAlreadyOwnedBySiblingMod()
+    {
+        using var fake = new FakeSdk(publishedId: "0");
+        var sibling = Path.Combine(
+            Directory.GetParent(fake.Mod.ModDir)!.FullName,
+            "bootstrap-collision-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sibling);
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(sibling, "itemV2.cfg"),
+                "title = \"Sibling\";\npublished_id = 555L;\n");
+            var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+            var expectedStaged = File.ReadAllText(staged.CfgPath);
+            File.WriteAllText(
+                staged.CfgPath,
+                UploadStager.UpsertPublishedId(expectedStaged, "555"));
+            var sourceBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+
+            var result = UploadStager.CompleteBootstrapWriteBack(
+                staged, fake.Mod, expectedStaged, Sha256(sourceBytes));
+
+            Assert.False(result.Ok);
+            Assert.Contains("already owns", result.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(sourceBytes, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+        }
+        finally
+        {
+            File.Delete(Path.Combine(sibling, "itemV2.cfg"));
+            Directory.Delete(sibling);
+        }
+    }
+
+    [Theory]
+    [InlineData("visibility = \"private\";", "visibility = \"public\";")]
+    [InlineData("content = \"content\";", "content = \"..\\\\foreign\";")]
+    [InlineData("preview = \"item_preview.png\";", "preview = \"foreign.png\";")]
+    public void BootstrapWriteBack_RejectsSecurityFieldMutation(
+        string original,
+        string replacement)
+    {
+        using var fake = new FakeSdk(publishedId: "0");
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        var sourceBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+        var malicious = UploadStager.UpsertPublishedId(expectedStaged, "555")
+            .Replace(original, replacement, StringComparison.Ordinal);
+        File.WriteAllText(staged.CfgPath, malicious);
+
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, fake.Mod, expectedStaged, Sha256(sourceBytes));
+
+        Assert.False(result.Ok);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+    }
+
+    [Fact]
+    public void BootstrapWriteBack_RejectsInjectedCfgDirective()
+    {
+        using var fake = new FakeSdk(publishedId: "0");
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        var sourceBytes = File.ReadAllBytes(fake.Mod.ItemCfgPath);
+        File.WriteAllText(
+            staged.CfgPath,
+            UploadStager.UpsertPublishedId(expectedStaged, "555") +
+            "content = \"C:/attacker\";\n");
+
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, fake.Mod, expectedStaged, Sha256(sourceBytes));
+
+        Assert.False(result.Ok);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(fake.Mod.ItemCfgPath));
+    }
+
+    [Fact]
+    public void BootstrapWriteBack_RejectsSourceTargetOutsideSelectedMod()
+    {
+        using var fake = new FakeSdk(publishedId: "0");
+        var staged = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+        var expectedStaged = File.ReadAllText(staged.CfgPath);
+        File.WriteAllText(
+            staged.CfgPath,
+            UploadStager.UpsertPublishedId(expectedStaged, "555"));
+        using var outside = new TempDir();
+        var outsideCfg = outside.Write("itemV2.cfg", File.ReadAllText(fake.Mod.ItemCfgPath));
+        var escaped = new ModInfo
+        {
+            Name = fake.Mod.Name,
+            ModDir = fake.Mod.ModDir,
+            ItemCfgPath = outsideCfg,
+        };
+        var outsideBytes = File.ReadAllBytes(outsideCfg);
+
+        var result = UploadStager.CompleteBootstrapWriteBack(
+            staged, escaped, expectedStaged, Sha256(outsideBytes));
+
+        Assert.False(result.Ok);
+        Assert.Contains("escapes", result.Message);
+        Assert.Equal(outsideBytes, File.ReadAllBytes(outsideCfg));
+    }
+
+    [Fact]
+    public void UpsertPublishedId_RejectsNonDecimalId()
+    {
+        Assert.Throws<InvalidDataException>(() =>
+            UploadStager.UpsertPublishedId("published_id = 0L;", "1; visibility = \"public\""));
+    }
+
+    [Fact]
+    public void UpsertPublishedId_PreservesWhitespaceAndCommentBytes()
+    {
+        const string source = "  published_id   =   0L; // assigned by Steam\r\n";
+        Assert.Equal(
+            "  published_id   =   724L; // assigned by Steam\r\n",
+            UploadStager.UpsertPublishedId(source, "724"));
     }
 
     [Fact]
@@ -240,4 +390,7 @@ public class UploadStagerTests
         var dir = UploadStager.GetStagingDir(@"C:\sdk\ugc_uploader");
         Assert.Equal(@"C:\sdk\ugc_uploader\sample_item", dir);
     }
+
+    private static string Sha256(byte[] bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 }
