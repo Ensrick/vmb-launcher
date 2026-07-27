@@ -66,67 +66,94 @@ internal static class CmdShared
     }
 
     /// <summary>
-    /// Machine-global ship/version claim gate (monorepo issue #724) — runs in the `upload` and
-    /// `all` verbs BEFORE anything is staged for ugc_tool. The monorepo's claim.ps1 mirrors every
-    /// claim into %APPDATA%\VMBLauncher\ship_claims\; because the launcher is the one chokepoint
-    /// every upload passes through, this check holds even when the invoking checkout's ship.ps1
-    /// predates the claim gate (the worktree bypass that collided ct_dev twice on 2026-07-18).
-    ///
-    /// Returns null to proceed, or an exit code to abort:
-    ///   - live claim, version != source MOD_VERSION  → refuse, exit 3 (two sessions racing
-    ///     different versions at the same Workshop item);
-    ///   - live claim, version matches                → one OK line, proceed;
-    ///   - no claim / stale (≥2 h) / unreadable claim → WARN and proceed (a missing claim must
-    ///     not brick old-workflow ships);
-    ///   - --no-claim                                 → skip entirely, loudly.
+    /// Fail-closed machine-global claim gate. An exact live owner/version match
+    /// is necessary but is not publication authorization; ModRunner performs
+    /// the independent hosted-receipt gate again immediately before ugc_tool.
     /// </summary>
-    public static int? ShipClaimCheck(CliArgs args, ModInfo mod)
+    public static int? ShipClaimCheck(Settings settings, ModInfo mod)
     {
-        if (args.NoClaim)
-        {
-            Console.Error.WriteLine($"[claim-gate] WARNING: --no-claim — SKIPPING the machine-global ship/version claim check for '{mod.Name}'. Only safe when NO other session is shipping on this machine (issue #724).");
-            return null;
-        }
-
         string sourceVersion;
+        string owner;
         try
         {
             sourceVersion = TitleVersionSync.ReadModVersion(TitleVersionSync.ResolveModLuaPath(mod));
+            owner = ShipOwnerId.Resolve(settings.ProjectRoot ?? "");
         }
         catch (Exception ex)
         {
-            // The upload path itself aborts on an unparseable MOD_VERSION (TitleVersionSync.SyncTitle)
-            // with the canonical error — don't duplicate the failure here, just note the gate couldn't run.
-            Console.Error.WriteLine($"[claim-gate] WARNING: couldn't read MOD_VERSION for the claim check ({ex.Message}) — proceeding; the upload's own title-version sync will surface this properly.");
-            return null;
+            Console.Error.WriteLine($"[claim-gate] REFUSING publication: cannot derive exact source version and owner ({ex.Message}).");
+            return CliDispatcher.ExitPreflight;
         }
 
-        var eval = ShipClaimGate.Evaluate(ShipClaimGate.DefaultClaimsDir(), mod.Name, sourceVersion, DateTime.UtcNow);
+        var eval = ShipClaimGate.Evaluate(
+            ShipClaimGate.DefaultClaimsDir(), mod.Name, sourceVersion, DateTime.UtcNow, owner);
         switch (eval.Verdict)
         {
             case ShipClaimGate.Verdict.Match:
-                Console.WriteLine($"[claim-gate] OK — live claim for '{mod.Name}' matches v{sourceVersion} (session {eval.Claim!.Session}).");
+                Console.WriteLine($"[claim-gate] OK - live machine-global claim matches '{mod.Name}' v{sourceVersion}, owner {owner}.");
                 return null;
 
             case ShipClaimGate.Verdict.Mismatch:
+                Console.Error.WriteLine($"[claim-gate] REFUSING publication of '{mod.Name}' v{sourceVersion}: {eval.Detail}.");
+                return CliDispatcher.ExitPreflight;
+
+            case ShipClaimGate.Verdict.OwnerMismatch:
                 Console.Error.WriteLine(
-                    $"[claim-gate] REFUSING upload of '{mod.Name}' v{sourceVersion}: another session holds a live claim for v{eval.Claim!.Version} " +
-                    $"(session {eval.Claim.Session}, {eval.AgeHours:0.00} h old). Two sessions are racing different versions at the same Workshop item (issue #724). " +
-                    $"Fix: .\\tools\\ship\\claim.ps1 -Mod {mod.Name} -Release then re-claim, or bump MOD_VERSION to the claimed version.");
+                    $"[claim-gate] REFUSING publication: live claim belongs to '{eval.Claim!.Session}', current owner is '{owner}'.");
                 return CliDispatcher.ExitPreflight;
 
             case ShipClaimGate.Verdict.Stale:
-                Console.Error.WriteLine($"[claim-gate] WARNING: claim for '{mod.Name}' is STALE ({eval.AgeHours:0.00} h ≥ {ShipClaimGate.StaleHours} h) — treating as unclaimed. Version collisions with parallel sessions are possible; claim first: .\\tools\\ship\\claim.ps1 -Mod {mod.Name}");
-                return null;
+                Console.Error.WriteLine($"[claim-gate] REFUSING publication: claim is stale ({eval.AgeHours:0.00} h >= {ShipClaimGate.StaleHours} h).");
+                return CliDispatcher.ExitPreflight;
 
             case ShipClaimGate.Verdict.Unreadable:
-                Console.Error.WriteLine($"[claim-gate] WARNING: claim file for '{mod.Name}' exists but is unreadable ({eval.Detail}) — proceeding as unclaimed.");
-                return null;
+                Console.Error.WriteLine($"[claim-gate] REFUSING publication: claim is unreadable ({eval.Detail}).");
+                return CliDispatcher.ExitPreflight;
 
             default: // NoClaim
-                Console.Error.WriteLine($"[claim-gate] WARNING: no live claim for '{mod.Name}' — this upload is UNCLAIMED and version collisions with parallel sessions are possible. Claim first: .\\tools\\ship\\claim.ps1 -Mod {mod.Name}");
-                return null;
+                Console.Error.WriteLine($"[claim-gate] REFUSING publication: no machine-global claim exists for '{mod.Name}'.");
+                return CliDispatcher.ExitPreflight;
         }
+    }
+
+    public static int? PublicationReceiptPresenceCheck(CliArgs args)
+    {
+        if (args.DryRunTitleRewrite || !string.IsNullOrWhiteSpace(args.PublicationReceiptPath))
+            return null;
+        Console.Error.WriteLine(
+            "vmblauncher: Workshop publication requires --publication-receipt from tools/ship/ship.ps1. " +
+            "A claim alone, direct upload/all, and the GUI are not publication authority.");
+        return CliDispatcher.ExitPreflight;
+    }
+}
+
+// --- capabilities ---------------------------------------------------------------------------
+
+internal static class CapabilitiesCommand
+{
+    internal const int CapabilitySchema = 1;
+    internal const int PublicationReceiptSchema = PublicationReceiptGate.Schema;
+    internal const string LockedUploadSnapshot = "locked-upload-snapshot-v1";
+    internal const string HostedReceipt = "hosted-publication-receipt-v3";
+    internal const string CommitBlobSnapshot = "git-commit-blob-snapshot-v1";
+    internal const string ConstrainedBootstrap = "constrained-first-upload-bootstrap-v1";
+
+    internal static IReadOnlyList<string> Lines()
+    {
+        var version = typeof(CapabilitiesCommand).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        return new[]
+        {
+            $"capability_schema={CapabilitySchema}",
+            $"version={version}",
+            $"publication_receipt_schema={PublicationReceiptSchema}",
+            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap}",
+        };
+    }
+
+    internal static int Run()
+    {
+        foreach (var line in Lines()) Console.WriteLine(line);
+        return CliDispatcher.ExitOk;
     }
 }
 
@@ -174,7 +201,7 @@ internal static class InfoCommand
         Console.WriteLine($"Name:         {mod.Name}");
         Console.WriteLine($"Title:        {mod.Title}");
         Console.WriteLine($"Visibility:   {mod.Visibility}");
-        Console.WriteLine($"Workshop ID:  {(string.IsNullOrEmpty(mod.PublishedId) ? "(none — first upload will create one)" : mod.PublishedId)}");
+        Console.WriteLine($"Workshop ID:  {(string.IsNullOrEmpty(mod.PublishedId) || mod.PublishedId == "0" ? "(pending — canonical ship will use constrained first-upload bootstrap)" : mod.PublishedId)}");
         Console.WriteLine($"Mod folder:   {mod.ModDir}");
         Console.WriteLine($"Build state:  {(mod.HasBuildOutput ? $"{mod.BundleCount} bundle(s) in {mod.BundleV2Dir}" : "not built yet")}");
         if (!string.IsNullOrEmpty(mod.Description))
@@ -268,12 +295,18 @@ internal static class UploadCommand
             return CliDispatcher.ExitBadUsage;
         }
 
-        // Machine-global ship/version claim gate (issue #724) — before staging/ugc_tool.
-        var claimAbort = CmdShared.ShipClaimCheck(args, mod);
+        var receiptAbort = CmdShared.PublicationReceiptPresenceCheck(args);
+        if (receiptAbort.HasValue) return receiptAbort.Value;
+        var claimAbort = CmdShared.ShipClaimCheck(settings, mod);
         if (claimAbort.HasValue) return claimAbort.Value;
 
         var runner = new ModRunner(settings, Console.WriteLine);
-        var outcome = runner.UploadAsync(mod, allowPublic: args.AllowPublic, dryRunTitleRewrite: args.DryRunTitleRewrite, ct: default).GetAwaiter().GetResult();
+        var outcome = runner.UploadAsync(
+            mod,
+            allowPublic: args.AllowPublic,
+            dryRunTitleRewrite: args.DryRunTitleRewrite,
+            publicationReceiptPath: args.PublicationReceiptPath,
+            ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(outcome, "upload");
     }
 }
@@ -302,7 +335,9 @@ internal static class AllCommand
         // Machine-global ship/version claim gate (issue #724). Checked up front so a mismatched
         // claim fails FAST (before the build), mirroring ship.ps1's gate-before-build ordering;
         // the compared values (claim version vs source MOD_VERSION) can't change during the build.
-        var claimAbort = CmdShared.ShipClaimCheck(args, mod);
+        var receiptAbort = CmdShared.PublicationReceiptPresenceCheck(args);
+        if (receiptAbort.HasValue) return receiptAbort.Value;
+        var claimAbort = CmdShared.ShipClaimCheck(settings, mod);
         if (claimAbort.HasValue) return claimAbort.Value;
 
         var runner = new ModRunner(settings, Console.WriteLine);
@@ -314,7 +349,12 @@ internal static class AllCommand
         if (!fresh.Ok) return CmdShared.RunOutcome(fresh, "build");
         var d = runner.DeployAsync(mod, skipRemote: args.NoRemote, ct: default).GetAwaiter().GetResult();
         if (!d.Ok) return CmdShared.RunOutcome(d, "deploy");
-        var u = runner.UploadAsync(mod, allowPublic: args.AllowPublic, dryRunTitleRewrite: args.DryRunTitleRewrite, ct: default).GetAwaiter().GetResult();
+        var u = runner.UploadAsync(
+            mod,
+            allowPublic: args.AllowPublic,
+            dryRunTitleRewrite: args.DryRunTitleRewrite,
+            publicationReceiptPath: args.PublicationReceiptPath,
+            ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(u, "upload");
     }
 }

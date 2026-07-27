@@ -128,9 +128,17 @@ public sealed class ModRunner
     }
 
     public async Task<RunOutcome> UploadAsync(ModInfo mod, bool allowPublic, CancellationToken ct = default)
-        => await UploadAsync(mod, allowPublic, dryRunTitleRewrite: false, ct);
+        => await UploadAsync(mod, allowPublic, dryRunTitleRewrite: false, publicationReceiptPath: null, ct);
 
     public async Task<RunOutcome> UploadAsync(ModInfo mod, bool allowPublic, bool dryRunTitleRewrite, CancellationToken ct = default)
+        => await UploadAsync(mod, allowPublic, dryRunTitleRewrite, publicationReceiptPath: null, ct);
+
+    public async Task<RunOutcome> UploadAsync(
+        ModInfo mod,
+        bool allowPublic,
+        bool dryRunTitleRewrite,
+        string? publicationReceiptPath,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(_settings.UgcToolPath) || !File.Exists(_settings.UgcToolPath))
             return new RunOutcome(false, "ugc_tool.exe not found. Set the path in Settings.");
@@ -192,7 +200,9 @@ public sealed class ModRunner
         TitleRewriteResult titleResult;
         try
         {
-            titleResult = TitleVersionSync.SyncTitle(mod, dryRun: dryRunTitleRewrite);
+            titleResult = string.IsNullOrWhiteSpace(publicationReceiptPath)
+                ? TitleVersionSync.SyncTitle(mod, dryRun: dryRunTitleRewrite)
+                : TitleVersionSync.ValidateTitleForPublication(mod);
         }
         catch (Exception ex)
         {
@@ -284,22 +294,58 @@ public sealed class ModRunner
             var uploadGuard = CheckWorkshopIdOwnership(stagedPublishedId, mod, "upload");
             if (!uploadGuard.Ok) return uploadGuard;
 
-            var toolFwd = _settings.UgcToolPath!.Replace('\\', '/');
-            var uploaderDir = Path.GetDirectoryName(_settings.UgcToolPath!)!.Replace('\\', '/');
+            // Final publication boundary. The receipt is independently
+            // downloaded from GitHub, then both source and exact SDK staging
+            // bytes are verified immediately before ugc_tool.
+            var publication = PublicationReceiptGate.AuthorizeForUpload(
+                publicationReceiptPath,
+                staged,
+                mod,
+                _settings.ProjectRoot,
+                _settings.UgcToolPath!,
+                DateTime.UtcNow);
+            if (!publication.Ok)
+                return new RunOutcome(false, $"[publication-gate] REFUSING ugc_tool: {publication.Message}");
+            using var verified = publication.Verified;
+            if (verified == null ||
+                !verified.TryConsume(mod.Name, DateTime.UtcNow))
+                return new RunOutcome(false, "[publication-gate] REFUSING ugc_tool: verified in-process receipt is absent, expired, or already consumed.");
+            L($"[publication-gate] OK - {publication.Message}");
+
+            try
+            {
+                // Existing-item uploads keep item.cfg immutable through process
+                // exit. A first upload opens only the cfg write boundary because
+                // ugc_tool must replace published_id=0 with Steam's assigned ID;
+                // content, preview, directories, and the executable stay pinned.
+                verified.PrepareForUploadProcess();
+            }
+            catch (Exception ex)
+            {
+                return new RunOutcome(
+                    false,
+                    $"[publication-gate] REFUSING ugc_tool: could not open the constrained bootstrap boundary ({ex.Message}).");
+            }
+
+            var toolFwd = verified.ToolPath.Replace('\\', '/');
+            var uploaderDir = Path.GetDirectoryName(verified.ToolPath)!.Replace('\\', '/');
             var relativeCfgArg = $"{UploadStager.StagingFolderName}/{UploadStager.StagedCfgFileName}";
             var result = await ProcessRunner.RunWithEulaYesAsync(toolFwd, new[] { "-c", relativeCfgArg, "-x" }, uploaderDir, L, ct);
             if (result.ExitCode != 0)
                 return new RunOutcome(false, $"ugc_tool exited with code {result.ExitCode}");
 
-            // If this was a first upload, ugc_tool wrote the new published_id into the staged cfg.
-            // Propagate it back to the mod's actual cfg so subsequent uploads target the same item.
-            // Stays inside the lock: it reads the shared staged cfg — the id-stomp vector.
-            try
+            var writeBack = verified.CompleteBootstrapWriteBack(mod);
+            if (!writeBack.Ok)
             {
-                if (UploadStager.PropagatePublishedIdBack(staged, mod))
-                    L("[upload] new Workshop ID written back into your mod's itemV2.cfg");
+                var recovery = string.IsNullOrWhiteSpace(writeBack.PublishedId)
+                    ? ""
+                    : $" Steam may have allocated Workshop ID {writeBack.PublishedId}; preserve it for explicit recovery.";
+                return new RunOutcome(
+                    false,
+                    $"[bootstrap-writeback] {writeBack.Message}{recovery}");
             }
-            catch (Exception ex) { L($"[upload] WARNING: couldn't propagate published_id: {ex.Message}"); }
+            if (verified.IsBootstrap)
+                L($"[bootstrap-writeback] {writeBack.Message}");
         }
         finally
         {
@@ -341,17 +387,18 @@ public sealed class ModRunner
     /// local Workshop content folder for <paramref name="publishedId"/> is owned by
     /// <paramref name="mod"/> before the caller acts on that id. Returns a FAILING RunOutcome to
     /// abort (a crossed id would hijack another mod's item on upload, or double-install a foreign
-    /// mod on deploy), or an OK RunOutcome — with a pass / first-upload / not-configured log line —
+    /// mod on deploy), or an OK RunOutcome — with a pass / no-evidence / not-configured log line —
     /// to proceed. <paramref name="action"/> is "upload" or "deploy" and only shapes the refusal
     /// message. The sentinel "0"/empty id (never-uploaded item) and a missing WorkshopContentRoot
-    /// setting both degrade gracefully to "proceed" rather than block a legitimate first upload.
+    /// setting both degrade gracefully to "proceed"; the publication gate separately rejects
+    /// a zero/absent ID until the bootstrap prerequisite has completed.
     /// </summary>
     private RunOutcome CheckWorkshopIdOwnership(string? publishedId, ModInfo mod, string action)
     {
         var id = publishedId?.Trim();
         if (string.IsNullOrEmpty(id) || id == "0")
         {
-            L($"[id-guard] no local owner evidence for {(string.IsNullOrEmpty(id) ? "(none)" : id)} (first upload?) - proceeding");
+            L($"[id-guard] no local owner evidence for {(string.IsNullOrEmpty(id) ? "(none)" : id)} - deferring to publication gate");
             return new RunOutcome(true, "id-guard: no published id yet");
         }
 
@@ -373,14 +420,14 @@ public sealed class ModRunner
         }
 
         // Not foreign: either the folder carries our own <name>.mod (owned - ok) or it has no .mod
-        // evidence yet (a legitimate first upload / freshly-subscribed empty folder).
+        // evidence yet (for example a freshly-subscribed empty folder).
         var hasOwnMarker = Directory.Exists(contentDir)
             && Directory.EnumerateFiles(contentDir)
                 .Any(f => string.Equals(Path.GetExtension(f), ".mod", StringComparison.OrdinalIgnoreCase));
         if (hasOwnMarker)
             L($"[id-guard] {id} owned by '{mod.Name}'.mod - ok");
         else
-            L($"[id-guard] no local owner evidence for {id} (first upload?) - proceeding");
+            L($"[id-guard] no local owner evidence for {id} - deferring to publication gate");
         return new RunOutcome(true, "id-guard: ok");
     }
 
@@ -390,7 +437,7 @@ public sealed class ModRunner
     /// <c>&lt;name&gt;.mod</c> entry file (VMB names it after the mod directory; the bundles beside
     /// it are hash-named <c>*.mod_bundle</c>). Returns the basename of a foreign <c>.mod</c> file
     /// when the folder is owned by some mod OTHER than <paramref name="modName"/>, else null. Null
-    /// covers "folder is ours", "folder has no .mod evidence yet" (legit first upload), and "folder
+    /// covers "folder is ours", "folder has no .mod evidence yet", and "folder
     /// doesn't exist". A non-null result means the id has been crossed onto <paramref name="modName"/>.
     /// </summary>
     /// <remarks>

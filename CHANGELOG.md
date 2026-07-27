@@ -1,5 +1,52 @@
 # VMB Launcher Changelog
 
+## v0.5.7 (2026-07-26)
+
+### Changed: publication requires an independently downloaded GitHub receipt
+
+- `upload` and `all` no longer accept claim-only publication or the removed
+  `--no-claim` bypass. Canonical `tools/ship/ship.ps1` supplies a five-minute
+  `--publication-receipt` that `publish-release.ps1` has already hosted as an
+  exact GitHub release asset.
+- Immediately before `ugc_tool`, the launcher independently downloads that
+  asset and requires the caller file to be byte-identical. A hand-authored JSON
+  object, including one with plausible live commit and QA fields, is not
+  publication authority.
+- The same final boundary independently re-queries the live default-branch
+  commit, exact merged PR, and successful hosted `qa-gate`, and requires the
+  machine-global claim's mod/version/owner to match exactly.
+- Receipt schema 3 anchors `itemV2.cfg`, every `bundleV2` file, and the selected
+  preview to exact Git blob IDs plus length/SHA-256. The launcher reconstructs
+  those bytes and MOD_VERSION from the receipt-selected commit object, verifies
+  each blob's Git object ID, and compares the independently pinned SDK cfg,
+  preview, and complete `content/` set directly to that immutable snapshot.
+  Local HEAD/index/worktree mutations cannot swap the authorized source.
+  File handles plus temporary directory
+  ACL leases deny same-user writes, replacement, deletion, or injection from
+  authorization through `ugc_tool` exit; `ugc_tool.exe` itself is pinned too.
+- First upload retains safe ID propagation through a distinct
+  `workshop_bootstrap` receipt. All immutable blob/staging proofs remain in
+  force; only the staged cfg and its parent-directory lease are released
+  immediately before `ugc_tool` because Steam may save the assigned
+  `published_id` by replacement. Content files/directories, preview, and tool
+  stay pinned. The post-process cfg may
+  differ only by that nonzero ID and ugc_tool's empty tags line, and source
+  write-back compare-and-swaps against the authorized Git blob while holding an
+  exclusive handle. The source cfg must contain exactly one zero-ID sentinel,
+  and an assigned ID already owned by a sibling mod is rejected. Concurrent
+  source edits, duplicate ID directives, and cfg directive injection fail
+  closed without being overwritten.
+- Receipt-backed uploads never rewrite `itemV2.cfg` title metadata after review.
+  A stale title/version suffix now fails before staging and leaves the committed
+  cfg byte-exact, rather than dirtying the release worktree before the receipt
+  comparison rejects it.
+- `capabilities --no-banner` exposes receipt-schema, exact-blob,
+  locked-snapshot, and constrained-bootstrap capabilities for the monorepo's
+  pre-mutation minimum-version probe.
+- GUI Upload and Full Pipeline publication actions are disabled; build and
+  deploy remain available. All Git and GitHub child processes use hidden,
+  no-window process settings.
+
 ## v0.5.6 (2026-07-18)
 
 ### Added: machine-global ship/version claim gate on `upload` / `all` (monorepo issue #724)

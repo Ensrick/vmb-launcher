@@ -219,41 +219,22 @@ public partial class MainWindow : Window
 
     private async void BtnUpload_Click(object sender, RoutedEventArgs e)
     {
-        if (_current == null) return;
-        if (!Preflight("Upload", "VMB", "Project folder", "Vermintide 2 SDK", "ugc_tool.exe", "Steam")) return;
-        bool allowPublic = false;
-        if (_current.Info.IsPublic)
-        {
-            var r = MessageBox.Show(this,
-                "This mod has visibility = \"public\". Public mods can be flagged irreversibly. Continue uploading?",
-                "Confirm public upload", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (r != MessageBoxResult.Yes) return;
-            allowPublic = true;
-        }
-        await RunActionAsync((r, m, ct) => r.UploadAsync(m, allowPublic, ct), "Upload");
+        await Task.CompletedTask;
+        MessageBox.Show(this,
+            "Workshop publication is available only through tools\\ship\\ship.ps1 after commit, push, pull-request review, hosted qa-gate, and merge. A GUI action or claim alone cannot authorize ugc_tool.",
+            "Publication requires a hosted ship receipt",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private async void BtnAll_Click(object sender, RoutedEventArgs e)
     {
-        if (_current == null) return;
-        if (!Preflight("Full pipeline", "VMB", "Project folder", "Vermintide 2 SDK", "ugc_tool.exe", "Steam", "Workshop content folder")) return;
-        bool allowPublic = false;
-        if (_current.Info.IsPublic)
-        {
-            var r = MessageBox.Show(this,
-                "This mod has visibility = \"public\". Public mods can be flagged irreversibly. Continue with full pipeline?",
-                "Confirm public upload", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (r != MessageBoxResult.Yes) return;
-            allowPublic = true;
-        }
-        await RunActionAsync(async (run, m, ct) =>
-        {
-            var b = await run.BuildAsync(m, clean: false, ct);
-            if (!b.Ok) return b;
-            var d = await run.DeployAsync(m, ct);
-            if (!d.Ok) return d;
-            return await run.UploadAsync(m, allowPublic, ct);
-        }, "Full pipeline");
+        await Task.CompletedTask;
+        MessageBox.Show(this,
+            "The GUI cannot publish. Use Build for a local artifact, then follow the canonical BuildOnly -> commit/push/PR/qa-gate/merge -> ship sequence.",
+            "Publication requires a hosted ship receipt",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void BtnRefresh_Click(object sender, RoutedEventArgs e)

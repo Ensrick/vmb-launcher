@@ -21,15 +21,14 @@ vmblauncher build    <mod-name> [--clean]     # VMB build into bundleV2/
 vmblauncher deploy   <mod-name> [--no-remote] # hash-verified copy to Workshop content folder
                                               #   THEN push to every enabled remote target
                                               #   (default: pc-b via Tailscale, auto-detected)
-vmblauncher upload   <mod-name> [--allow-public] [--no-claim]
-                                              # stage + push to Workshop via ugc_tool
-                                              #   checks the machine-global ship-claim mirror first
-                                              #   (see "Ship-claim gate" below)
-vmblauncher all      <mod-name> [--clean] [--allow-public] [--no-remote] [--no-claim]
-                                              # build + deploy + upload, stops on first failure
-                                              #   same ship-claim check, run before the build
 vmblauncher help                              # also: --help, -h
 ```
+
+`upload` and `all` are internal publication verbs. They cannot reach
+`ugc_tool` without `--publication-receipt` containing the exact short-lived
+receipt bytes hosted on the canonical GitHub release by the monorepo's
+`tools\ship\ship.ps1` transaction. Caller-authored JSON is not authority. GUI
+Upload and Build+Deploy+Upload are intentionally non-publishing.
 
 Global flags:
 
@@ -41,18 +40,24 @@ Global flags:
 
 ### Canonical release path: `tools\ship\ship.ps1 -Mod <name>`
 
-For a full RELEASE (not just local iteration), prefer the one-shot
-`tools\ship\ship.ps1 -Mod <name>` over hand-chaining `VMBLauncher.exe all <mod>`
-+ `publish-release.ps1`. It runs both, then PROVES the two steps that silently
-lie actually transferred: it SHA256-compares `<mod>\bundleV2\` against the
-Workshop content folder (deploy), and scans `workshop_log.txt` for a fresh
-`Uploaded new content` / `No content change detected` line for the mod's
-`published_id` (upload). Flags mirror the launcher: `-AllowPublic`, `-NoRemote`,
-plus `-SkipGitHub` to skip the GitHub release. It fails loudly (non-zero exit) on
-the first problem, then prints the test-refresh reminder below. Before invoking
-the launcher, it runs `qa/run_all.ps1 -Quick -SkipLua` (including the offline
-Lua 5.1 unit suite) and target-mod lint as a blocking headless preflight. A
-preflight failure occurs before build, deploy, or upload.
+Publication order is exact and non-bypassable:
+
+1. Acquire the machine-global claim for the mod/version owner.
+2. Edit source, `itemV2.cfg`, CHANGELOG, and version.
+3. Run `tools\ship\ship.ps1 -Mod <name> -BuildOnly` to generate and validate
+   the tracked bundle without deployment or publication.
+4. Commit source and bundle together, push, open the pull request, pass hosted
+   `qa-gate`, and merge.
+5. From a clean checkout at the exact live default-branch HEAD, run
+   `tools\ship\ship.ps1 -Mod <name>` (plus `-AllowPublic` only when required).
+
+The final ship independently proves the clean commit, merged PR, hosted
+`qa-gate`, claim owner/version, and exact cfg/bundle hashes. It records GitHub
+release provenance and hosts a receipt valid for at most five minutes.
+VMBLauncher independently downloads that exact receipt, rechecks every fact,
+and verifies the SDK staging file set and hashes immediately before `ugc_tool`.
+`-SkipGitHub`, direct publisher calls, direct launcher publication, and GUI
+publication are not supported paths.
 
 **Test refresh (user ruling 2026-07-13):** the author on PC-A tests the
 hash-verified local deploy and does not need to restart Steam. Volunteer testers
@@ -60,30 +65,25 @@ refresh via the dev collection by unsubscribing/resubscribing the affected mods.
 For every tester, confirm the running build via the newest
 `%APPDATA%\Fatshark\Vermintide 2\console_logs\` log's `[<id>:LOAD] vX.Y.Z` line.
 
-The launcher verbs below remain the primitives `ship.ps1` is built on, and the
-right tool for local build/deploy iteration (no upload).
+The launcher `build` and `deploy` verbs remain the primitives for local,
+non-publishing iteration.
 
 ### Default: prefer the launcher for everything
 
-`VMBLauncher.exe` (headless or GUI) is the single source of truth for build / deploy / upload / list / info / doctor across all VT2 mods in this repo. Drive it via `tools\ship\ship.ps1` (the full build+deploy+upload+release+verify pipeline). (The per-mod `upload_*.ps1` wrappers were removed 2026-07-07, archived to `../_vt2-tweaker-archive/`; the earlier `deploy_*.ps1` / `deploy_all.ps1` wrappers were removed 2026-05-21 — use `ship.ps1` or `VMBLauncher.exe deploy/upload <mod>` directly.)
+`VMBLauncher.exe` remains the engineered build/deploy/upload boundary across
+all VT2 mods. Operators use its `build`, `deploy`, `list`, `info`, and `doctor`
+verbs directly; `tools\ship\ship.ps1` alone drives its internal publication
+verb with the GitHub-hosted receipt.
 
-**Do not** invent `scp`/`ssh`/Robocopy pipelines for PC-B deploy. The launcher already does it (v0.4.0+) — `deploy` and `all` push to every enabled `RemoteDeployTargets` entry after the local copy completes. Reaching for raw scp means either the launcher is broken (file an issue) or the user has a one-off reason to bypass it (in which case ask, don't assume).
+**Do not** invent `scp`/`ssh`/Robocopy pipelines for PC-B deploy. The launcher
+already pushes to every enabled `RemoteDeployTargets` entry after the local
+copy completes.
 
 After every upload, **verify the Workshop page file size** before assuming the push transferred. `ugc_tool` is known to print `Upload finished` even when content didn't transfer. For public mods that's automatable via `ISteamRemoteStorage/GetPublishedFileDetails`; for `friends_only`/`private` items the public API returns blank fields, so you need to eyeball the Workshop page in Steam.
 
-After every successful upload, also run `tools/publish-release/publish-release.ps1` to push the built bundles to a GitHub release. The vt2-mod-updater app reads that release to keep friends' Workshop folders synced. The launcher itself does NOT do this — it's a separate step layered on top of `vmblauncher all <mod>`.
-
-### After upload, also deploy — author's local install is otherwise stale
-
-For any `upload` call on a mod where the author IS the tester, follow with `deploy` (or just use `all`). **Steam does NOT reliably re-download Workshop items the same Steam account authored** — the local cache can stay on the old bundle for hours.
-
-```powershell
-& $exe all <mod>      # build + deploy + upload — covers both author + subscribers
-```
-
-Avoid bare `upload` during iterative dev unless you've already deployed the same bundle locally. Reverse failure mode also exists: a deploy alone only copies to the LOCAL Workshop folder, leaving SUBSCRIBERS stale until an `upload` runs. `vmblauncher all <mod>` (and `ship.ps1`) cover both directions.
-
-**Burned 2026-05-16** in verminious_dreams_lighting tuning loop: uploaded v0.2 and v0.3 to Workshop, user restarted VT2, still ran v0.1.0-dev (confirmed via console log `[MOD][verminious_dreams_lighting][ECHO] Verminious Dreams Lighting v0.1.0-dev`). User saw v0.1 semantics and reported "nothing changed". Several minutes wasted on "restart Steam / unsub-resub" diagnostic before the log mismatch surfaced. Use `all`.
+The canonical ship records the GitHub release before Workshop mutation and
+deploys the exact reviewed bundle before publication. Do not reverse that
+order or add a post-upload commit/push step.
 
 ### Why prefer launcher
 
@@ -102,13 +102,16 @@ Rationale:
 Does the user have a strong preference for a specific .ps1 script?      yes → honour it
                                                                          no  → ↓
 
-Is the target machine missing the VMBLauncher binary?                    yes → fall back to .ps1
+Is the target machine missing the approved VMBLauncher binary?           yes → stop; install the approved binary
                                                                          no  → ↓
 
 Use vmblauncher.
 ```
 
-If the binary isn't present, build it first: `cd tools/vmb-launcher && .\publish.ps1 -SkipOpen` (~30 s release build; 124 unit tests run first).
+If the approved binary is absent, the canonical ship fails closed. Do not
+fall back to raw PowerShell uploaders or create an ad hoc release binary during
+the ship. Launcher development may use an isolated test build, but installing a
+publication-capable binary is a separate reviewed maintainer action.
 
 ## Exit codes (the part scripts care about)
 
@@ -208,33 +211,24 @@ When to bypass:
 
 ## Ship-claim gate (machine-global, monorepo issue #724)
 
-`upload` and `all` (v0.5.6+) evaluate the machine-global ship/version claim
-mirror at `%APPDATA%\VMBLauncher\ship_claims\<mod_folder_name>.claim` BEFORE
-staging anything for ugc_tool (`all` checks up front, before the build). The
-monorepo's `tools/ship/claim.ps1` writes that mirror on every claim acquire and
-removes it on `-Release`; `tools/ship/CLAIMS.md` is the owner doc.
-
-Why the launcher enforces it: `ship.ps1`'s own claim gate only exists in
-checkouts whose `ship.ps1` postdates monorepo PR 757, and each worktree has its
-own repo-local `.ship_claims/` — a parallel session shipping from an older
-worktree bypassed the gate entirely and collided ct_dev twice on 2026-07-18
-(`0.7.295-dev`, `0.7.296-dev`). The launcher is the one chokepoint every upload
-passes through regardless of checkout vintage.
-
-Verdicts (the compared value is the claim's `version` vs the MOD_VERSION parsed
-from the mod's main lua):
+The only live claim authority is machine-global:
+`%APPDATA%\VMBLauncher\ship_claims\<mod_folder_name>.claim`. Repo-local
+`.ship_claims` content is documentation only. The monorepo's
+`tools/ship/claim.ps1` owns atomic acquire/release and uses a 24-hour stale
+window.
 
 | Claim state | Behavior |
 |---|---|
-| Live (< 2 h), version differs | **REFUSE, exit 3** — names the claim's version + session and the fix (`.\tools\ship\claim.ps1 -Mod <name> -Release` then re-claim, or bump MOD_VERSION to the claimed version). Two sessions are racing different versions. |
-| Live, version matches | One `[claim-gate] OK` line; proceed. |
-| No claim / stale (>= 2 h) / unreadable | WARNING (unclaimed upload, collisions possible); proceed. Missing claims must not brick old-workflow ships. |
-| `--no-claim` passed | Check skipped with a loud warning (parity with `ship.ps1 -NoClaim`). Only for solo-session machines. |
+| Live (< 24 h), exact mod/version/owner match | Necessary coordination gate; continue to receipt verification. |
+| Missing, stale, unreadable, wrong mod/version, or foreign owner | **REFUSE** before publication. |
 
-The gate lives in the headless CLI verbs (`Cli/Commands.cs` →
-`CmdShared.ShipClaimCheck`, evaluator in `Services/ShipClaimGate.cs`); the GUI
-upload button does not run it. It never creates the claims directory — only
-`claim.ps1` writes there.
+A matching claim is never sufficient publication authority. The final
+`PublicationReceiptGate` requires a receipt no older than five minutes, obtains
+the release asset independently, requires byte-for-byte identity with the local
+handoff, and verifies clean local HEAD, live default HEAD, the exact merged PR,
+successful hosted `qa-gate`, cfg/source hashes, and the exact staged cfg/content
+file set. `--no-claim` is rejected as an unknown flag. GUI publication is
+disabled.
 
 ## Preflight gates
 
@@ -516,50 +510,22 @@ all in some configurations. When the log is missing, fall back to:
   to spot un-deployed local changes (these usually match unless un-deployed
   changes exist).
 
-**When to use `all` instead of `upload`.** `upload` only stages the
-existing `bundleV2/`. If source files have been edited since the last
-build, the bundle is **stale** and `upload` will ship the OLD content
-(which is usually identical to Workshop, triggering the no-op). Detect
-stale bundles by comparing source mtime vs bundle mtime:
+**Stale-bundle prevention.** Publication never chooses between direct `all`
+and `upload`. Generate the artifact with `ship.ps1 -BuildOnly`, commit the
+exact source and bundle together, pass PR review and hosted QA, merge, then run
+the canonical ship from clean live default HEAD. The hosted receipt records
+every source bundle hash, while the launcher also derives the canonical staged
+cfg and verifies every staged content byte immediately before `ugc_tool`.
 
-```bash
-# For each mod: newest source file mtime vs newest bundle mtime
-NEWEST_SRC=$(find $mod/scripts $mod/gui $mod/strings -type f \
-  \( -name "*.lua" -o -name "*.png" -o -name "*.material" -o -name "*.unit" \) \
-  -printf "%T@\n" | sort -nr | head -1)
-NEWEST_BUN=$(find $mod/bundleV2 -name "*.mod_bundle" -printf "%T@\n" | sort -nr | head -1)
-# If src > bundle, bundle is stale -- use `vmblauncher all`, not `upload`.
-```
-
-The three possible misalignments:
-
-1. **source > bundle** → bundle stale, needs `vmblauncher all`
-2. **bundle != Workshop** → bundle current but Workshop behind, needs
-   `vmblauncher upload`
-3. **deploy folder != local bundle** → Steam re-downloaded a Workshop
-   version on top of your local deploy (happens automatically when you're
-   subscribed to your own mod). Byte-cmp matching filenames to see if
-   local has content the Workshop doesn't.
-
-**Canonical procedure for iterative dev** (source may have changed):
-```
-vmblauncher all <mod>                  # build + deploy + upload
-vmblauncher all <mod> --allow-public   # public-visibility mods
-```
-
-For confirmed-current bundle that just hasn't been pushed:
-```
-vmblauncher upload <mod>
-```
-
-Then **always** verify in `workshop_log.txt` that the line says
-`Uploaded new content`, not `No content change detected`.
+For non-publishing iteration, `vmblauncher build <mod>` and
+`vmblauncher deploy <mod>` remain available. A deploy updates only local and
+enabled remote test folders; it does not update subscribers.
 
 ### Hand-scaffolded first uploads (without `vmb create`)
 
-When hand-writing a new VT2 VMB mod's `.mod` / `.package` / cfg / lua
-files manually (skipping `node vmb.js create ...`) and uploading the first
-time via `vmblauncher upload <mod>`, several non-obvious gotchas trip:
+When hand-writing a new VT2 VMB mod's `.mod` / `.package` / cfg / lua files
+manually (skipping `node vmb.js create ...`), the first canonical ship still
+has several non-obvious gotchas:
 
 **Preview file requirement.** VMB-built mods use **`item_preview.png`**
 in the cfg (`preview = "item_preview.png";`), NOT `preview.jpg` (which is
@@ -607,18 +573,25 @@ manually subscribe via
 
 1. Hand-write `<mod>.mod`, `<mod>/resource_packages/<mod>/<mod>.package`,
    three lua files, `itemV2.cfg` (with `visibility = "friends_only"` and
-   `preview = "item_preview.png"`, NO `published_id`).
+   `preview = "item_preview.png"`, and `published_id = 0L`; omit `tags`).
 2. `Copy-Item C:\Users\danjo\source\repos\vmb\.template-vmf\item_preview.png <mod>\item_preview.png`
-3. `vmblauncher build <mod>` → 4 bundles in `bundleV2/`.
-4. `vmblauncher upload <mod>` → ugc_tool creates Workshop item; on
-   success writes `published_id` back to cfg; on FAILURE capture
-   `publisher_id` from stdout, convert signed → unsigned, write
-   `published_id = <N>L;` to cfg manually, then retry.
-5. Open `https://steamcommunity.com/sharedfiles/filedetails/?id=<published_id>`
+3. Acquire the machine-global claim and run
+   `tools\ship\ship.ps1 -Mod <mod> -BuildOnly`.
+4. Commit source and generated bundles together, push, open the PR, pass
+   hosted `qa-gate`, merge, then run the canonical ship from clean live
+   default HEAD. Canonical ship issues a distinct hosted bootstrap receipt;
+   never use direct launcher or GUI publication.
+5. On successful item creation, the launcher validates the complete ugc_tool
+   cfg change and compare-and-swaps only the returned `published_id` into the
+   still-authorized source cfg. The ship stops as **not test-ready** and retains
+   the machine-global claim. Commit the ID-only change, pass protected PR QA,
+   merge it, and run the ordinary canonical ship before releasing the claim or
+   applying any in-game lifecycle label.
+6. Open `https://steamcommunity.com/sharedfiles/filedetails/?id=<published_id>`
    → Subscribe.
-6. Steam downloads to
+7. Steam downloads to
    `C:\Program Files (x86)\Steam\steamapps\workshop\content\552500\<published_id>\`.
-7. `vmblauncher deploy <mod>` now works for subsequent iterations.
+8. `vmblauncher deploy <mod>` now works for subsequent non-publishing iterations.
 
 See also the `vmb create`-based path, which scaffolds the preview
 automatically but has its own delete-on-failure quirk.
@@ -670,8 +643,9 @@ The release binary lands at `bin/Release/net9.0-windows/win-x64/publish/VMBLaunc
 
 ## Inputs Claude is most likely to be asked for
 
-- "Upload my mod" → `vmblauncher upload <mod> [--allow-public if needed]`
-- "Build, deploy, and upload" → `vmblauncher all <mod>`
+- "Upload my mod" → follow claim → BuildOnly → commit/push/PR/qa-gate/merge →
+  canonical `tools\ship\ship.ps1`
+- "Build, deploy, and upload" → use the same canonical reviewed ship sequence
 - "Why won't the upload work" → `vmblauncher doctor` then inspect blocking checks
 - "What mods do I have" → `vmblauncher list`
 - "Show me the cfg state for X" → `vmblauncher info <mod>`

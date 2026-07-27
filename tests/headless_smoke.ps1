@@ -8,8 +8,11 @@
 
 param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\bin\Debug\net9.0-windows\VMBLauncher.exe'),
-    [string]$TestMod = 'general_tweaker',     # safe target — private, has a Workshop ID, deployable
-    [string]$PublicMod = 'chaos_wastes_tweaker'  # the one mod whose visibility is public
+    [string]$ConfigPath = '',
+    [string]$TestMod = 'general_tweaker',     # hosted-receipt gate target; no publication occurs in safe mode
+    [string]$PublicMod = 'chaos_wastes_tweaker',  # the one mod whose visibility is public
+    [switch]$PublicationGateOnly,
+    [switch]$SkipGui
 )
 
 # Native stderr lines from the exe come back as ErrorRecord objects under Stop, which
@@ -30,12 +33,16 @@ function Record {
 
 function Run {
     param([string[]]$ExeArgs)
-    $stdout = & $Exe @ExeArgs 2>&1
+    $effectiveArgs = @($ExeArgs)
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $effectiveArgs += @('--config', $ConfigPath)
+    }
+    $stdout = & $Exe @effectiveArgs 2>&1
     return [PSCustomObject]@{ Code = $LASTEXITCODE; Output = ($stdout | Out-String) }
 }
 
 Write-Host "Testing $Exe" -ForegroundColor Cyan
-Write-Host "Test mod: $TestMod (private), $PublicMod (public)" -ForegroundColor DarkGray
+Write-Host "Test mod: $TestMod (hosted receipt gate), $PublicMod (public guard)" -ForegroundColor DarkGray
 
 # --- Exit codes -----------------------------------------------------------------------------
 
@@ -57,7 +64,21 @@ Record 'info nonexistent mod exits 2' ($r.Code -eq 2)
 $r = Run @('upload', $PublicMod, '--no-banner')
 Record 'upload public without --allow-public exits 2' ($r.Code -eq 2)
 
+$r = Run @('upload', $TestMod, '--allow-public', '--no-banner')
+Record 'direct upload without hosted receipt exits 3' ($r.Code -eq 3) ("got exit=$($r.Code)")
+Record 'direct upload explains claim alone is insufficient' ($r.Output -match 'claim\s+alone')
+
+$r = Run @('upload', $TestMod, '--allow-public', '--no-claim', '--no-banner')
+Record '--no-claim is rejected as an unknown argument' ($r.Code -eq 2 -and $r.Output -match 'unknown')
+
 # --- Help / banner -------------------------------------------------------------------------
+
+$r = Run @('capabilities', '--no-banner')
+Record 'capabilities exits 0' ($r.Code -eq 0)
+Record 'capabilities advertises receipt schema 3' ($r.Output -match 'publication_receipt_schema=3')
+Record 'capabilities advertises locked upload snapshot' ($r.Output -match 'locked-upload-snapshot-v1')
+Record 'capabilities advertises exact Git commit blobs' ($r.Output -match 'git-commit-blob-snapshot-v1')
+Record 'capabilities advertises constrained first-upload bootstrap' ($r.Output -match 'constrained-first-upload-bootstrap-v1')
 
 $r = Run @('help')
 Record 'help exits 0' ($r.Code -eq 0)
@@ -97,18 +118,18 @@ Record 'doctor reports VMB check' ($r.Output -match 'VMB:')
 Record 'doctor reports Steam check' ($r.Output -match 'Steam:')
 Record 'doctor reports SDK check' ($r.Output -match 'Vermintide 2 SDK:')
 
-# --- build (real action) -----------------------------------------------------------------
+# --- build/deploy (real actions; omitted by safe publication-gate mode) -------------------
 
-$r = Run @('build', $TestMod, '--no-banner')
-Record "build $TestMod exits 0" ($r.Code -eq 0) ("got exit=$($r.Code)")
-Record "build $TestMod streams VMB output" ($r.Output -match 'Successfully built')
-Record "build $TestMod emits [build] OK line" ($r.Output -match '\[build\] OK')
+if (-not $PublicationGateOnly) {
+    $r = Run @('build', $TestMod, '--no-banner')
+    Record "build $TestMod exits 0" ($r.Code -eq 0) ("got exit=$($r.Code)")
+    Record "build $TestMod streams VMB output" ($r.Output -match 'Successfully built')
+    Record "build $TestMod emits [build] OK line" ($r.Output -match '\[build\] OK')
 
-# --- deploy (real action) ----------------------------------------------------------------
-
-$r = Run @('deploy', $TestMod, '--no-banner')
-Record "deploy $TestMod exits 0" ($r.Code -eq 0)
-Record "deploy $TestMod emits [deploy] OK line" ($r.Output -match '\[deploy\] OK')
+    $r = Run @('deploy', $TestMod, '--no-banner')
+    Record "deploy $TestMod exits 0" ($r.Code -eq 0)
+    Record "deploy $TestMod emits [deploy] OK line" ($r.Output -match '\[deploy\] OK')
+}
 
 # --- GUI detection rules -----------------------------------------------------------------
 # We DON'T actually launch the GUI (would block); we verify the headless branch is taken
@@ -123,7 +144,8 @@ Record 'args reorderable: --no-banner before verb' ($r.Code -eq 0 -and $r.Output
 
 $head = 'C:\Program Files\Git\usr\bin\head.exe'
 if (Test-Path $head) {
-    cmd /c "`"$Exe`" list --no-banner | `"$head`" -n 3 >NUL"
+    $configArg = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { '' } else { " --config `"$ConfigPath`"" }
+    cmd /c "`"$Exe`" list --no-banner$configArg | `"$head`" -n 3 >NUL"
     Record 'truncated pipe (cmd + head) exits 0' ($LASTEXITCODE -eq 0) ("got exit=$LASTEXITCODE")
 } else {
     Record 'truncated pipe test skipped (Git head not found)' $true
@@ -133,6 +155,9 @@ if (Test-Path $head) {
 
 $defaultCfg = Join-Path $env:APPDATA 'VMBLauncher\settings.json'
 Record 'default settings file exists' (Test-Path $defaultCfg)
+if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+    Record 'isolated settings file exists' (Test-Path -LiteralPath $ConfigPath)
+}
 
 # --- All verbs work on the public mod (with --allow-public) ------------------------------
 
@@ -180,13 +205,15 @@ function Test-GuiArgs {
     if (-not $p.HasExited) { $p | Stop-Process -Force -ErrorAction SilentlyContinue }
     Record $Label $hadWindow ("exited=$($p.HasExited) title='$($p.MainWindowTitle)'")
 }
-Test-GuiArgs 'zero-arg launches GUI window' @()
-Test-GuiArgs '--gui flag launches GUI window' @('--gui')
-Test-GuiArgs '--gui with other args still launches GUI' @('list', '--gui')
+if (-not $SkipGui) {
+    Test-GuiArgs 'zero-arg launches GUI window' @()
+    Test-GuiArgs '--gui flag launches GUI window' @('--gui')
+    Test-GuiArgs '--gui with other args still launches GUI' @('list', '--gui')
+}
 
 # --- Summary -----------------------------------------------------------------------------
 
-$failed = $results | Where-Object { -not $_.Pass }
+$failed = @($results | Where-Object { -not $_.Pass })
 Write-Host ''
 Write-Host ("Total: {0}    Pass: {1}    Fail: {2}" -f $results.Count, ($results.Count - $failed.Count), $failed.Count) `
     -ForegroundColor ($(if ($failed.Count -eq 0) { 'Green' } else { 'Red' }))

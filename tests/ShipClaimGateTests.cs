@@ -6,10 +6,8 @@ namespace VmbLauncher.Tests;
 /// <summary>
 /// Pins for the machine-global ship/version claim gate (monorepo issue #724): the launcher-side
 /// evaluation of %APPDATA%\VMBLauncher\ship_claims\&lt;mod&gt;.claim mirrors written by the
-/// monorepo's tools/ship/claim.ps1. The contract under test:
-///   - live claim, version != source → Mismatch (the ONLY refusing verdict, exit 3 at the CLI);
-///   - live claim, version == source → Match;
-///   - no file → NoClaim; ≥2 h old → Stale; unparseable → Unreadable (all proceed-with-warning).
+/// monorepo's tools/ship/claim.ps1. Publication is fail-closed unless mod,
+/// version, owner, and the 24-hour live window all match exactly.
 /// </summary>
 public class ShipClaimGateTests
 {
@@ -110,16 +108,16 @@ public class ShipClaimGateTests
     }
 
     [Fact]
-    public void Evaluate_Stale_WhenClaimIsTwoHoursOrOlder()
+    public void Evaluate_Stale_WhenClaimIsOlderThanTwentyFourHours()
     {
         using var tmp = new TempDir();
-        tmp.Write("modx.claim", ClaimBody("modx", "9.9.9-dev", "sess-old", Now.AddHours(-3)));
+        tmp.Write("modx.claim", ClaimBody("modx", "9.9.9-dev", "sess-old", Now.AddHours(-25)));
         var eval = ShipClaimGate.Evaluate(tmp.Path, "modx", "1.0.0", Now);
         Assert.Equal(ShipClaimGate.Verdict.Stale, eval.Verdict);
     }
 
     [Fact]
-    public void Evaluate_StaleBoundary_ExactlyTwoHoursIsStale()
+    public void Evaluate_StaleBoundary_ExactlyTwentyFourHoursIsStale()
     {
         // Mirrors claim.ps1 Test-ClaimStale: age >= StaleHours is stale.
         using var tmp = new TempDir();
@@ -145,6 +143,24 @@ public class ShipClaimGateTests
         tmp.Write("modx.claim", ClaimBody("modx", "0.7.297-dev", "s", Now.AddMinutes(-5)));
         var eval = ShipClaimGate.Evaluate(tmp.Path, "modx", "0.7.297", Now);
         Assert.Equal(ShipClaimGate.Verdict.Mismatch, eval.Verdict);
+    }
+
+    [Fact]
+    public void Evaluate_OwnerMismatch_WhenVersionMatchesButSessionDiffers()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("modx.claim", ClaimBody("modx", "1.0.0", "owner-a", Now.AddMinutes(-5)));
+        var eval = ShipClaimGate.Evaluate(tmp.Path, "modx", "1.0.0", Now, "owner-b");
+        Assert.Equal(ShipClaimGate.Verdict.OwnerMismatch, eval.Verdict);
+    }
+
+    [Fact]
+    public void Evaluate_Match_RequiresExactOwnerWhenProvided()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("modx.claim", ClaimBody("modx", "1.0.0", "owner-a", Now.AddMinutes(-5)));
+        var eval = ShipClaimGate.Evaluate(tmp.Path, "modx", "1.0.0", Now, "owner-a");
+        Assert.Equal(ShipClaimGate.Verdict.Match, eval.Verdict);
     }
 
     // ---- Path composition ---------------------------------------------------------------------

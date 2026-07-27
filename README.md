@@ -1,6 +1,7 @@
 # VMB Launcher
 
-A friendly Windows GUI for the Vermintide 2 mod build / deploy / upload pipeline. Wraps Vermintide Mod Builder + ugc_tool so you don't have to memorise PowerShell incantations or hand-edit configs.
+A Windows GUI and headless build/deploy boundary for Vermintide 2 mods.
+Workshop mutation is authorization-bound to a reviewed monorepo ship transaction.
 
 ![Workflow: Build, Deploy, Upload — one click each](https://img.shields.io/badge/platform-windows-blue) ![C#](https://img.shields.io/badge/.NET-9.0-512BD4) ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -25,7 +26,7 @@ This tool handles all of that.
 
 - **Auto-detects** VMB, Steam, the VT2 SDK, `ugc_tool.exe`, and the Workshop content folder. Most users never touch the Settings dialog.
 - **First-run setup** highlights anything missing with one-click fixes (auto-detect, browse, install SDK via Steam, subscribe in Steam).
-- **Build / Deploy / Upload** buttons per mod. Plus a "Build + Deploy + Upload" combo for the common case.
+- **Build / Deploy** buttons per mod. GUI publication actions explain the required reviewed ship workflow and never invoke `ugc_tool`.
 - **Headless CLI** — same binary, run from PowerShell or cmd with verbs (`list`, `info`, `doctor`, `build`, `deploy`, `upload`, `all`). Real exit codes, streamed output, no second binary to install. See [Headless mode](#headless-mode) below.
 - **Hash-verified deploys** so a half-flushed bundle never lands in the Workshop folder.
 - **`--cwd` workflow supported** — projects with `.vmbrc` outside the VMB folder work without manual reconfiguration.
@@ -43,10 +44,39 @@ Any non-empty args (other than `--gui`) put the same binary into CLI mode:
 & .\VMBLauncher.exe doctor                            # diagnostics
 & .\VMBLauncher.exe build    my_mod [--clean]
 & .\VMBLauncher.exe deploy   my_mod
-& .\VMBLauncher.exe upload   my_mod [--allow-public]
-& .\VMBLauncher.exe all      my_mod [--clean] [--allow-public]
 & .\VMBLauncher.exe help                              # full reference
 ```
+
+Workshop publication is driven only by the monorepo's
+`tools\ship\ship.ps1`. Its exact order is: acquire the machine-global claim,
+edit, run `ship.ps1 -BuildOnly`, commit source and bundles together, push/open
+the PR, pass hosted `qa-gate`, merge, then run the canonical ship from clean
+live default commit. The internal `upload`/`all` verbs require the exact receipt
+hosted on the canonical GitHub release, valid for at most five minutes, and
+independently reconstruct cfg, bundle, preview, and MOD_VERSION bytes from the
+receipt-selected Git commit blobs before comparing the pinned SDK staging
+snapshot. Local HEAD, index, and working-tree cleanliness are not byte
+authority. A claim or hand-authored JSON alone cannot publish.
+
+First Workshop item creation uses the same hosted-authorization path with the
+distinct `workshop_bootstrap` receipt purpose. Every source blob and staged
+input is proven exactly as above. Immediately before process creation, the
+launcher releases only the staged cfg and its parent-directory lease so
+`ugc_tool` can replace `published_id = 0L`; content files/directories, preview,
+and executable remain pinned. After success, the complete staged cfg must differ
+only by one nonzero
+ID (plus ugc_tool's empty tags line), and source write-back is compare-and-swap
+against the authorized Git blob. Duplicate source sentinels and IDs already
+owned by another mod are rejected. The outer ship treats this as identity
+bootstrap only: it does not mark issues test-ready and retains the machine-global
+claim until the ID-only reconciliation is reviewed and merged.
+
+The publication guard has a strict two-repository landing order:
+VMBLauncher **0.5.7 must be released and installed first**. Only then may the
+monorepo receipt-schema-3/capability requirement land. `ship.ps1` probes
+`capabilities --no-banner` before any GitHub release mutation and fails closed
+against 0.5.6 or a launcher without the exact-commit-blob, locked upload
+snapshot, and constrained first-upload boundaries.
 
 Exit codes:
 
