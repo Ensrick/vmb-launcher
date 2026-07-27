@@ -1,18 +1,16 @@
-# headless_smoke.ps1 — end-to-end exercise of the headless CLI against every claim in
-# tools/vmb-launcher/CLAUDE.md. Run from the launcher folder. Returns exit 0 if every
-# expectation matches, exit 1 with a summary of failures otherwise.
+# headless_smoke.ps1 — read-only exercise of the headless CLI contract documented in
+# CLAUDE.md. Run from the launcher folder. Returns exit 0 if every expectation
+# matches, exit 1 with a summary of failures otherwise.
 #
-# This is intentionally NOT a unit test — it runs the real binary against the real
-# filesystem and the real VMB toolchain, because the launcher's value is in those
-# integrations. Pair this with `test.ps1` (xUnit) for unit-level coverage of services.
+# This is intentionally NOT a unit test — it runs the real binary against read-only
+# launcher discovery and diagnostics. It never invokes a build, deploy, upload, or
+# GUI path. Pair it with `test.ps1` (xUnit) for unit-level coverage of services.
 
 param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\bin\Debug\net9.0-windows\VMBLauncher.exe'),
     [string]$ConfigPath = '',
-    [string]$TestMod = 'general_tweaker',     # hosted-receipt gate target; no publication occurs in safe mode
-    [string]$PublicMod = 'chaos_wastes_tweaker',  # the one mod whose visibility is public
-    [switch]$PublicationGateOnly,
-    [switch]$SkipGui
+    [string]$TestMod = 'general_tweaker',
+    [string]$PublicMod = 'chaos_wastes_tweaker'
 )
 
 # Native stderr lines from the exe come back as ErrorRecord objects under Stop, which
@@ -20,6 +18,37 @@ param(
 # regular pipeline output; we capture them via 2>&1 in Run().
 $ErrorActionPreference = 'Continue'
 $Exe = (Resolve-Path $Exe).Path
+
+function Test-BytesEqual {
+    param([byte[]]$Left, [byte[]]$Right)
+    if ($null -eq $Left -or $null -eq $Right) { return $null -eq $Left -and $null -eq $Right }
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        if ($Left[$i] -ne $Right[$i]) { return $false }
+    }
+    return $true
+}
+
+$defaultCfg = Join-Path $env:APPDATA 'VMBLauncher\settings.json'
+$defaultCfgExisted = Test-Path -LiteralPath $defaultCfg -PathType Leaf
+$defaultCfgBefore = if ($defaultCfgExisted) {
+    [IO.File]::ReadAllBytes($defaultCfg)
+}
+else {
+    $null
+}
+$ownedConfigRoot = $null
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $ownedConfigRoot = Join-Path ([IO.Path]::GetTempPath()) ("vmb-headless-smoke-{0}" -f [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $ownedConfigRoot | Out-Null
+    $ConfigPath = Join-Path $ownedConfigRoot 'settings.json'
+    if ($defaultCfgExisted) {
+        [IO.File]::WriteAllBytes($ConfigPath, $defaultCfgBefore)
+    }
+    else {
+        [IO.File]::WriteAllText($ConfigPath, '{}', (New-Object Text.UTF8Encoding($false)))
+    }
+}
 
 $results = @()
 function Record {
@@ -34,15 +63,14 @@ function Record {
 function Run {
     param([string[]]$ExeArgs)
     $effectiveArgs = @($ExeArgs)
-    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
-        $effectiveArgs += @('--config', $ConfigPath)
-    }
+    $effectiveArgs += @('--config', $ConfigPath)
     $stdout = & $Exe @effectiveArgs 2>&1
     return [PSCustomObject]@{ Code = $LASTEXITCODE; Output = ($stdout | Out-String) }
 }
 
-Write-Host "Testing $Exe" -ForegroundColor Cyan
-Write-Host "Test mod: $TestMod (hosted receipt gate), $PublicMod (public guard)" -ForegroundColor DarkGray
+try {
+    Write-Host "Testing $Exe" -ForegroundColor Cyan
+    Write-Host "Test mod: $TestMod; public discovery sample: $PublicMod" -ForegroundColor DarkGray
 
 # --- Exit codes -----------------------------------------------------------------------------
 
@@ -55,21 +83,8 @@ Record 'no verb exits 2' ($r.Code -eq 2) ("got exit=$($r.Code), output: $($r.Out
 $r = Run @('potato', '--no-banner')
 Record 'unknown verb exits 2' ($r.Code -eq 2) ("got exit=$($r.Code)")
 
-$r = Run @('build', '--no-banner')
-Record 'build missing mod exits 2' ($r.Code -eq 2)
-
 $r = Run @('info', 'no_such_mod_12345', '--no-banner')
 Record 'info nonexistent mod exits 2' ($r.Code -eq 2)
-
-$r = Run @('upload', $PublicMod, '--no-banner')
-Record 'upload public without --allow-public exits 2' ($r.Code -eq 2)
-
-$r = Run @('upload', $TestMod, '--allow-public', '--no-banner')
-Record 'direct upload without hosted receipt exits 3' ($r.Code -eq 3) ("got exit=$($r.Code)")
-Record 'direct upload explains claim alone is insufficient' ($r.Output -match 'claim\s+alone')
-
-$r = Run @('upload', $TestMod, '--allow-public', '--no-claim', '--no-banner')
-Record '--no-claim is rejected as an unknown argument' ($r.Code -eq 2 -and $r.Output -match 'unknown')
 
 # --- Help / banner -------------------------------------------------------------------------
 
@@ -118,19 +133,6 @@ Record 'doctor reports VMB check' ($r.Output -match 'VMB:')
 Record 'doctor reports Steam check' ($r.Output -match 'Steam:')
 Record 'doctor reports SDK check' ($r.Output -match 'Vermintide 2 SDK:')
 
-# --- build/deploy (real actions; omitted by safe publication-gate mode) -------------------
-
-if (-not $PublicationGateOnly) {
-    $r = Run @('build', $TestMod, '--no-banner')
-    Record "build $TestMod exits 0" ($r.Code -eq 0) ("got exit=$($r.Code)")
-    Record "build $TestMod streams VMB output" ($r.Output -match 'Successfully built')
-    Record "build $TestMod emits [build] OK line" ($r.Output -match '\[build\] OK')
-
-    $r = Run @('deploy', $TestMod, '--no-banner')
-    Record "deploy $TestMod exits 0" ($r.Code -eq 0)
-    Record "deploy $TestMod emits [deploy] OK line" ($r.Output -match '\[deploy\] OK')
-}
-
 # --- GUI detection rules -----------------------------------------------------------------
 # We DON'T actually launch the GUI (would block); we verify the headless branch is taken
 # by checking output is produced for these arg shapes.
@@ -153,13 +155,9 @@ if (Test-Path $head) {
 
 # --- Settings file path ------------------------------------------------------------------
 
-$defaultCfg = Join-Path $env:APPDATA 'VMBLauncher\settings.json'
-Record 'default settings file exists' (Test-Path $defaultCfg)
-if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
-    Record 'isolated settings file exists' (Test-Path -LiteralPath $ConfigPath)
-}
+Record 'isolated settings file exists' (Test-Path -LiteralPath $ConfigPath)
 
-# --- All verbs work on the public mod (with --allow-public) ------------------------------
+# --- Read-only discovery works on a public mod --------------------------------------------
 
 $r = Run @('info', $PublicMod, '--no-banner')
 Record "info on public mod ($PublicMod) exits 0" ($r.Code -eq 0)
@@ -188,27 +186,29 @@ try {
     Pop-Location
 }
 
-# --- GUI fallback ------------------------------------------------------------------------
-# Launch zero-arg and --gui in the background, give them a moment to show a window, kill.
+# --- Default settings preservation --------------------------------------------------------
 
-function Test-GuiArgs {
-    param([string]$Label, [string[]]$LaunchArgs)
-    # Start-Process refuses an empty -ArgumentList, so branch on whether args were supplied.
-    if ($null -eq $LaunchArgs -or $LaunchArgs.Count -eq 0) {
-        $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden
-    } else {
-        $p = Start-Process -FilePath $Exe -ArgumentList $LaunchArgs -PassThru -WindowStyle Hidden
-    }
-    Start-Sleep -Seconds 2
-    $p.Refresh()
-    $hadWindow = (-not $p.HasExited) -and (-not [string]::IsNullOrEmpty($p.MainWindowTitle))
-    if (-not $p.HasExited) { $p | Stop-Process -Force -ErrorAction SilentlyContinue }
-    Record $Label $hadWindow ("exited=$($p.HasExited) title='$($p.MainWindowTitle)'")
+$defaultCfgAfterExists = Test-Path -LiteralPath $defaultCfg -PathType Leaf
+$defaultCfgAfter = if ($defaultCfgAfterExists) {
+    [IO.File]::ReadAllBytes($defaultCfg)
 }
-if (-not $SkipGui) {
-    Test-GuiArgs 'zero-arg launches GUI window' @()
-    Test-GuiArgs '--gui flag launches GUI window' @('--gui')
-    Test-GuiArgs '--gui with other args still launches GUI' @('list', '--gui')
+else {
+    $null
+}
+Record 'default settings bytes unchanged' (
+    $defaultCfgExisted -eq $defaultCfgAfterExists -and
+    (Test-BytesEqual $defaultCfgBefore $defaultCfgAfter)
+)
+}
+finally {
+    if ($ownedConfigRoot) {
+        if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+            Remove-Item -LiteralPath $ConfigPath -Force
+        }
+        if (Test-Path -LiteralPath $ownedConfigRoot -PathType Container) {
+            Remove-Item -LiteralPath $ownedConfigRoot
+        }
+    }
 }
 
 # --- Summary -----------------------------------------------------------------------------
