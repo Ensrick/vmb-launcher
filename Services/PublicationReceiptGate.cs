@@ -173,6 +173,7 @@ public static class PublicationReceiptGate
 {
     public const int Schema = 3;
     public const string GitHubRepo = "Ensrick/vermintide-2-tweaker";
+    public const string QaCheckName = "qa-gate";
     public static readonly TimeSpan MaximumLifetime = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -362,7 +363,7 @@ public static class PublicationReceiptGate
             return new(false, $"Machine-global claim is not an exact live owner/version match ({claim.Verdict}).");
 
         var auth = receipt.Authorization;
-        if (auth.Mode != "hosted_qa" || auth.QaCheck != "qa-gate")
+        if (auth.Mode != "hosted_qa" || auth.QaCheck != QaCheckName)
             return new(false, "Receipt lacks canonical hosted qa-gate authorization.");
         if (!SameSha(auth.SourceCommit, receipt.SourceCommit) ||
             !SameSha(auth.DefaultBranchCommit, receipt.SourceCommit))
@@ -662,7 +663,7 @@ public static class PublicationReceiptGate
         using var pullsDoc = JsonDocument.Parse(Run("gh", new[]
         {
             "api", "-H", "Accept: application/vnd.github+json",
-            $"repos/{GitHubRepo}/commits/{sourceCommit}/pulls"
+            $"repos/{GitHubRepo}/commits/{sourceCommit}/pulls?per_page=100"
         }));
         var mergedPr = pullsDoc.RootElement.EnumerateArray()
             .Where(p => p.TryGetProperty("merged_at", out var merged) && merged.ValueKind != JsonValueKind.Null)
@@ -672,13 +673,19 @@ public static class PublicationReceiptGate
             .OrderBy(n => n)
             .FirstOrDefault();
 
+        // Server-side check_name filter plus the maximum page size: the unfiltered
+        // first page holds 30 runs, so unrelated checks on a busy commit could bury
+        // the qa-gate run and fail the gate closed on a fully authorized ship.
+        // The client-side name/head_sha/status/conclusion filters below stay as an
+        // independent recheck of whatever the API returns.
         using var checksDoc = JsonDocument.Parse(Run("gh", new[]
         {
             "api", "-H", "Accept: application/vnd.github+json",
-            $"repos/{GitHubRepo}/commits/{sourceCommit}/check-runs"
+            $"repos/{GitHubRepo}/commits/{sourceCommit}/check-runs" +
+                $"?check_name={Uri.EscapeDataString(QaCheckName)}&per_page=100"
         }));
         var qa = checksDoc.RootElement.GetProperty("check_runs").EnumerateArray()
-            .Where(c => c.GetProperty("name").GetString() == "qa-gate")
+            .Where(c => c.GetProperty("name").GetString() == QaCheckName)
             .Where(c => SameSha(c.GetProperty("head_sha").GetString(), sourceCommit))
             .Where(c => c.GetProperty("status").GetString() == "completed")
             .Where(c => c.GetProperty("conclusion").GetString() == "success")
