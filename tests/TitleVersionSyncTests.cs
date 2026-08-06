@@ -3,7 +3,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class TitleVersionSyncTests
+public class TitleVersionSyncTests : MutationTestBase
 {
     // ---- ApplyVersionSuffix (pure string helper) -----------------------------------------
 

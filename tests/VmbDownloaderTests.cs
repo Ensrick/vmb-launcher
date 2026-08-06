@@ -6,7 +6,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class VmbDownloaderTests
+public class VmbDownloaderTests : MutationTestBase
 {
     [Fact]
     public void ExtractZipAssetUrl_returns_zip_url_from_real_response_shape()

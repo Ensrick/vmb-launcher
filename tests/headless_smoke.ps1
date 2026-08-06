@@ -94,6 +94,8 @@ Record 'capabilities advertises receipt schema 3' ($r.Output -match 'publication
 Record 'capabilities advertises locked upload snapshot' ($r.Output -match 'locked-upload-snapshot-v1')
 Record 'capabilities advertises exact Git commit blobs' ($r.Output -match 'git-commit-blob-snapshot-v1')
 Record 'capabilities advertises constrained first-upload bootstrap' ($r.Output -match 'constrained-first-upload-bootstrap-v1')
+Record 'capabilities advertises machine transaction lease' ($r.Output -match 'machine-transaction-lease-v1')
+Record 'capabilities advertises crash-safe upload ACL journal' ($r.Output -match 'crash-safe-upload-acl-journal-v1')
 
 $r = Run @('help')
 Record 'help exits 0' ($r.Code -eq 0)

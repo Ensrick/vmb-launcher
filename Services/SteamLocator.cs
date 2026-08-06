@@ -62,12 +62,9 @@ public static class SteamLocator
         {
             var ws = Path.Combine(sa, "workshop", "content", Vt2AppId.ToString());
             if (Directory.Exists(ws)) return ws;
-            var wsRoot = Path.Combine(sa, "workshop", "content");
-            if (Directory.Exists(wsRoot))
-            {
-                Directory.CreateDirectory(Path.Combine(wsRoot, Vt2AppId.ToString()));
-                return Path.Combine(wsRoot, Vt2AppId.ToString());
-            }
+            // Discovery is read-only. Creating the app directory during
+            // Settings.AutoFillMissing used to mutate shared Steam state before
+            // the machine transaction was acquired.
         }
         return null;
     }

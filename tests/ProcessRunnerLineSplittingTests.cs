@@ -9,7 +9,7 @@ namespace VmbLauncher.Tests;
 /// middle of a Stingray progress message, CRLF line endings, very small read chunks. The fix in
 /// v0.2.3 stops treating bare <c>\r</c> as a line terminator and only splits on <c>\n</c>.
 /// </summary>
-public class ProcessRunnerLineSplittingTests
+public class ProcessRunnerLineSplittingTests : MutationTestBase
 {
     private static async Task<List<string>> Drain(string content, CancellationToken ct = default)
     {

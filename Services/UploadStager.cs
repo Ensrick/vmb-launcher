@@ -54,16 +54,25 @@ public static class UploadStager
     /// <summary>Stage <paramref name="mod"/> for upload. Returns the staged cfg path.</summary>
     public static StagedUpload Stage(ModInfo mod, string ugcToolPath)
     {
+        MachineTransactionLease.RequireCurrent("Upload staging");
         var uploaderDir = Path.GetDirectoryName(ugcToolPath)
             ?? throw new InvalidOperationException("ugc_tool.exe path has no parent directory.");
         var stagingDir = GetStagingDir(uploaderDir);
         var contentDir = Path.Combine(stagingDir, "content");
 
-        // Wipe and recreate the staging folder. Best-effort cleanup; if we can't delete (e.g.
-        // somebody's holding a handle), recreating may still work as long as we can overwrite.
+        // Wipe and recreate the staging folder. This is fail-closed: continuing
+        // after a recursive-delete failure mixes old and new publication bytes.
         if (Directory.Exists(stagingDir))
         {
-            try { Directory.Delete(stagingDir, recursive: true); } catch { /* see below */ }
+            try { Directory.Delete(stagingDir, recursive: true); }
+            catch (Exception ex)
+            {
+                throw new IOException(
+                    $"Could not clear shared SDK staging directory '{stagingDir}'. Refusing to mix stale and current upload bytes.", ex);
+            }
+            if (Directory.Exists(stagingDir))
+                throw new IOException(
+                    $"Shared SDK staging directory still exists after recursive delete: '{stagingDir}'.");
         }
         Directory.CreateDirectory(contentDir);
 

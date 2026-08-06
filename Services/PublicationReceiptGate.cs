@@ -739,6 +739,8 @@ public static class PublicationReceiptGate
 
     private static byte[] RunBinary(string fileName, IReadOnlyList<string> arguments)
     {
+        MachineTransactionLease.RequireCurrent("Publication receipt process creation");
+        ProcessTreeGuard.EnsureCurrentProcessContained();
         var psi = new ProcessStartInfo
         {
             FileName = fileName,

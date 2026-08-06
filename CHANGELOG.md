@@ -1,5 +1,49 @@
 # VMB Launcher Changelog
 
+## v0.6.0 (2026-08-06)
+
+### Fixed: one machine transaction and crash-safe SDK staging ACLs (#1180)
+
+- Every GUI and CLI build, deploy, upload, and combined action now enters the
+  same machine-global transaction before settings auto-fill or any VMB,
+  Stingray, deployment, SDK staging, or Workshop mutation. Nested launcher
+  calls are re-entrant; a canonical `ship.ps1` child can join only its exact
+  live parent after authenticating the owner PID/start time, project root, mod,
+  owner record, and inherited random token.
+- The wrapper/launcher enters a named kill-on-close process Job before mutation.
+  Hard owner death terminates descendants and abandoned recovery polls the
+  persisted Job's active-process accounting, closing each query handle
+  immediately, before another process mutates; normal release also
+  drains authenticated child/grandchild residue and deletes its authenticated
+  owner record before unlocking. A pre-existing record is recovered after
+  every acquisition, including when Windows recreated a fresh mutex object.
+- Non-mutating Steam/browser/folder shell actions use an allowlisted canonical
+  Explorer breakaway path, while every mutating tool remains contained.
+- Settings path discovery is read-only; authenticated saves reload under the
+  lease and use durable replacement. Canonical ship uses one private exact-root
+  config and never rewrites shared launcher settings.
+  Existing malformed/unreadable settings now abort mutation instead of being
+  auto-filled and overwritten, and GUI/CLI leases bind the exact resolved
+  fallback project root used by downstream work.
+- Upload ACL hardening now writes and flushes a recovery journal before the
+  first DACL change. Recovery verifies canonical paths, directory identities,
+  owner liveness, and exact original-or-launcher-owned descriptors before
+  restoring the original DACL; ambiguous or externally changed state fails
+  closed without partial repair.
+- A one-time recovery lane recognizes only the exact v0.5.9 launcher DENY on
+  `sample_item` and `content`. It validates every candidate before mutation and
+  requires deeper matches to reconstruct their parent's Access semantics before
+  converting recovery to the ordinary crash-safe journal.
+- Failed abandoned-owner recovery re-abandons the mutex without leaking a
+  blocked owner thread; repeated contenders must traverse the same fail-closed
+  recovery gate.
+- SDK staging deletion failures are no longer swallowed, preventing stale and
+  newly copied bundle bytes from being combined.
+- `machine-transaction-lease-v1` and
+  `crash-safe-upload-acl-journal-v1` are advertised to downstream publication
+  guards. Tests use fake processes and isolated staging fixtures only; they do
+  not invoke VMB, Stingray, deployment, Steam, or Workshop.
+
 ## v0.5.9 (2026-08-06)
 
 ### Fixed: exact-master QA lookup now consumes every check-run page

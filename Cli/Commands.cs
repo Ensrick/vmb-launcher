@@ -137,6 +137,8 @@ internal static class CapabilitiesCommand
     internal const string HostedReceipt = "hosted-publication-receipt-v3";
     internal const string CommitBlobSnapshot = "git-commit-blob-snapshot-v1";
     internal const string ConstrainedBootstrap = "constrained-first-upload-bootstrap-v1";
+    internal const string MachineTransactionLease = "machine-transaction-lease-v1";
+    internal const string CrashSafeUploadAclJournal = "crash-safe-upload-acl-journal-v1";
 
     internal static IReadOnlyList<string> Lines()
     {
@@ -146,7 +148,7 @@ internal static class CapabilitiesCommand
             $"capability_schema={CapabilitySchema}",
             $"version={version}",
             $"publication_receipt_schema={PublicationReceiptSchema}",
-            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap}",
+            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap},{MachineTransactionLease},{CrashSafeUploadAclJournal}",
         };
     }
 

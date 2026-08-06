@@ -10,19 +10,23 @@ namespace VmbLauncher.Views;
 
 public partial class FirstRunWindow : Window
 {
-    public Settings Settings { get; }
+    public Settings Settings { get; private set; }
+    private readonly GuiSettingsTransaction _transaction;
 
     public FirstRunWindow(Settings s)
     {
-        Settings = s;
+        _transaction = GuiSettingsTransaction.Enter("gui-first-run-settings");
+        // A waiting first-run window must not edit a pre-transaction snapshot.
+        Settings = _transaction.Reload(s.ConfigPath);
         InitializeComponent();
         Loaded += (_, _) => Refresh();
+        Closed += (_, _) => _transaction.Dispose();
     }
 
     private void Refresh()
     {
         // Always re-run auto-detection in case the user installed something between checks.
-        if (Settings.AutoFillMissing()) Settings.Save();
+        if (Settings.AutoFillMissing()) _transaction.Save(Settings);
 
         SpItems.Children.Clear();
         var checks = Diagnostics.RunAll(Settings);
@@ -98,12 +102,12 @@ public partial class FirstRunWindow : Window
         {
             case "browse-vmb":
                 yield return ("Download VMB now", async () => await DownloadVmbAsync());
-                yield return ("Auto-detect", () => { var v = VmbLocator.AutoDetect(); if (v != null) Settings.VmbRoot = v.Root; Settings.Save(); });
-                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick VMB folder" }; if (dlg.ShowDialog(this) == true) { Settings.VmbRoot = dlg.FolderName; Settings.Save(); } });
+                yield return ("Auto-detect", () => { var v = VmbLocator.AutoDetect(); if (v != null) Settings.VmbRoot = v.Root; _transaction.Save(Settings); });
+                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick VMB folder" }; if (dlg.ShowDialog(this) == true) { Settings.VmbRoot = dlg.FolderName; _transaction.Save(Settings); } });
                 break;
             case "browse-project":
-                yield return ("Auto-detect", () => { var p = VmbProject.AutoDetect(Settings.VmbRoot); if (p != null) Settings.ProjectRoot = p.Root; Settings.Save(); });
-                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick the folder where your mods live (contains .vmbrc)" }; if (dlg.ShowDialog(this) == true) { Settings.ProjectRoot = dlg.FolderName; Settings.Save(); } });
+                yield return ("Auto-detect", () => { var p = VmbProject.AutoDetect(Settings.VmbRoot); if (p != null) Settings.ProjectRoot = p.Root; _transaction.Save(Settings); });
+                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick the folder where your mods live (contains .vmbrc)" }; if (dlg.ShowDialog(this) == true) { Settings.ProjectRoot = dlg.FolderName; _transaction.Save(Settings); } });
                 break;
             case "configure-project":
                 yield return ("Configure now", async () =>
@@ -121,23 +125,23 @@ public partial class FirstRunWindow : Window
                 });
                 break;
             case "browse-steam":
-                yield return ("Auto-detect", () => { var p = SteamLocator.FindSteamInstall(); if (p != null) Settings.SteamRoot = p; Settings.Save(); });
-                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick Steam folder" }; if (dlg.ShowDialog(this) == true) { Settings.SteamRoot = dlg.FolderName; Settings.Save(); } });
+                yield return ("Auto-detect", () => { var p = SteamLocator.FindSteamInstall(); if (p != null) Settings.SteamRoot = p; _transaction.Save(Settings); });
+                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick Steam folder" }; if (dlg.ShowDialog(this) == true) { Settings.SteamRoot = dlg.FolderName; _transaction.Save(Settings); } });
                 break;
             case "start-steam":
-                yield return ("Start Steam", () => { try { Process.Start(new ProcessStartInfo("steam://open/main") { UseShellExecute = true }); } catch { } });
+                yield return ("Start Steam", () => { try { NonMutationShell.Open("steam://open/main"); } catch { } });
                 break;
             case "install-sdk":
                 yield return ("Open SDK in Steam", () => OpenUrl("steam://run/718610"));
-                yield return ("Auto-detect", () => { var p = SteamLocator.FindVt2Sdk(); if (p != null) Settings.Vt2SdkRoot = p; Settings.Save(); });
-                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick Vermintide 2 SDK folder" }; if (dlg.ShowDialog(this) == true) { Settings.Vt2SdkRoot = dlg.FolderName; Settings.Save(); } });
+                yield return ("Auto-detect", () => { var p = SteamLocator.FindVt2Sdk(); if (p != null) Settings.Vt2SdkRoot = p; _transaction.Save(Settings); });
+                yield return ("Browse...", () => { var dlg = new OpenFolderDialog { Title = "Pick Vermintide 2 SDK folder" }; if (dlg.ShowDialog(this) == true) { Settings.Vt2SdkRoot = dlg.FolderName; _transaction.Save(Settings); } });
                 break;
             case "browse-tool":
-                yield return ("Auto-detect", () => { var p = SteamLocator.FindUgcTool(); if (p != null) Settings.UgcToolPath = p; Settings.Save(); });
-                yield return ("Browse...", () => { var dlg = new OpenFileDialog { Title = "Pick ugc_tool.exe", Filter = "ugc_tool.exe|ugc_tool.exe" }; if (dlg.ShowDialog(this) == true) { Settings.UgcToolPath = dlg.FileName; Settings.Save(); } });
+                yield return ("Auto-detect", () => { var p = SteamLocator.FindUgcTool(); if (p != null) Settings.UgcToolPath = p; _transaction.Save(Settings); });
+                yield return ("Browse...", () => { var dlg = new OpenFileDialog { Title = "Pick ugc_tool.exe", Filter = "ugc_tool.exe|ugc_tool.exe" }; if (dlg.ShowDialog(this) == true) { Settings.UgcToolPath = dlg.FileName; _transaction.Save(Settings); } });
                 break;
             case "open-workshop":
-                yield return ("Auto-detect", () => { var p = SteamLocator.FindWorkshopContentRoot(); if (p != null) Settings.WorkshopContentRoot = p; Settings.Save(); });
+                yield return ("Auto-detect", () => { var p = SteamLocator.FindWorkshopContentRoot(); if (p != null) Settings.WorkshopContentRoot = p; _transaction.Save(Settings); });
                 yield return ("Browse VT2 Workshop", () => OpenUrl("https://steamcommunity.com/app/552500/workshop/"));
                 break;
         }
@@ -145,7 +149,7 @@ public partial class FirstRunWindow : Window
 
     private static void OpenUrl(string url)
     {
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        try { NonMutationShell.Open(url); } catch { }
     }
 
     private CancellationTokenSource? _downloadCts;
@@ -169,7 +173,7 @@ public partial class FirstRunWindow : Window
         if (result.Ok && result.VmbRoot != null)
         {
             Settings.VmbRoot = result.VmbRoot;
-            Settings.Save();
+            _transaction.Save(Settings);
             MessageBox.Show(this, $"VMB installed at:\n{result.VmbRoot}\n\nClick Re-check everything to verify.", "VMB Launcher", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         else
@@ -182,14 +186,16 @@ public partial class FirstRunWindow : Window
 
     private void BtnOpenSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsWindow(Settings) { Owner = this };
-        if (dlg.ShowDialog() == true) Refresh();
+        // Explicitly borrow the already-owned first-run transaction; never
+        // reacquire a second machine mutex from the nested modal.
+        var dlg = new SettingsWindow(Settings, _transaction) { Owner = this };
+        if (dlg.ShowDialog() == true) { Settings = dlg.Settings; Refresh(); }
     }
 
     private void BtnContinue_Click(object sender, RoutedEventArgs e)
     {
         Settings.ConfirmedFirstRun = true;
-        Settings.Save();
+        _transaction.Save(Settings);
         DialogResult = true;
         Close();
     }
@@ -197,7 +203,7 @@ public partial class FirstRunWindow : Window
     private void BtnSkip_Click(object sender, RoutedEventArgs e)
     {
         Settings.ConfirmedFirstRun = true;
-        Settings.Save();
+        _transaction.Save(Settings);
         DialogResult = false;
         Close();
     }

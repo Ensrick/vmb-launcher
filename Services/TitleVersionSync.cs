@@ -146,6 +146,7 @@ public static class TitleVersionSync
 
         if (result.Changed && !dryRun)
         {
+            MachineTransactionLease.RequireCurrent("itemV2.cfg title synchronization");
             File.WriteAllText(mod.ItemCfgPath, result.NewCfgText);
             // Refresh the in-memory ModInfo so downstream code (UploadStager,
             // etc.) sees the new title.

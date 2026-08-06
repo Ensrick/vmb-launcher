@@ -68,6 +68,59 @@ For every tester, confirm the running build via the newest
 The launcher `build` and `deploy` verbs remain the primitives for local,
 non-publishing iteration.
 
+### Machine-global transaction boundary
+
+Every mutating GUI or CLI action enters
+`Global\Ensrick.VMBLauncher.Transaction.v1` before settings auto-fill or any
+VMB, Stingray, deployment, SDK staging, upload, Workshop verification, or claim
+finalization work. Canonical `ship.ps1` holds one continuous transaction and
+passes an authenticated, random lease identity only to its immediate launcher
+children. Nested launcher calls are re-entrant; unrelated processes wait and
+time out before mutation. Never add a second lock outside this order: machine
+transaction first, then the monorepo GitHub-release mutex, then the launcher's
+legacy upload semaphore.
+
+Upload ACLs are journaled and flushed before the first DACL mutation. A later
+transaction owner may recover only a dead owner's journal whose canonical
+paths, file identities, and exact original-or-launcher-owned descriptors still
+match. Do not delete the journal, reset ACLs manually, or weaken a recovery
+failure into a warning. The only legacy inference lane recognizes the exact
+v0.5.9 launcher DENY on `sample_item`/`content`; any ambiguity fails closed.
+Both directories must carry the exact ACE, and every deeper exact-looking ACE
+must reconstruct its immediate parent's Access semantics before any write.
+
+The launcher joins a named kill-on-close Windows Job before mutation. Its
+schema-2 owner record persists that exact Job name. After hard owner death, a
+contender polls the recorded Job's `ActiveProcesses` accounting and closes
+each temporary query handle immediately; zero or an absent exact Job is drained.
+It never waits for ordinary Job signalling before changing the record or
+shared state. Ordinary release authenticates Job membership and
+drains residue, authenticates/deletes its owner record while still holding the
+mutex, then unlocks. Every acquisition checks any pre-existing durable record
+even when Windows recreated a fresh non-abandoned named mutex object. PID alone
+is never kill authority. Only
+`NonMutationShell` may request `BREAKAWAY_FROM_JOB`, and it resolves and passes
+the canonical full `%WINDIR%\explorer.exe` as the non-null application name.
+Never route VMB, Stingray, git, gh, ssh, ugc_tool, or any helper with mutation
+capability through that escape.
+
+If abandoned-owner recovery fails, the mutex owner thread exits without
+`ReleaseMutex` and a non-owning kernel handle preserves abandonment for the
+next contender. Never normally release or strand a live owner thread on this
+path; every retry must re-enter recovery and remain fail-closed.
+
+`Settings.DefaultConfigPath()` and `Settings.Load()` are read-only. Every save
+requires an authenticated current machine lease, uses durable replacement, and
+mutating CLI/GUI flows acquire then reload before auto-fill/save. Nested first
+run -> settings dialogs use an explicit borrowed/refcounted lease. Canonical
+ship reads global settings once for dependency discovery but never rewrites
+them; it uses one durable PID/start-named private `--config` for all calls.
+Mutating flows use `Settings.LoadForMutation`: a missing file is first-run
+state, but an existing unreadable/malformed file aborts without auto-fill or
+overwrite. Bind the lease to the exact root returned by
+`VmbProject.Resolve(ProjectRoot) ?? VmbProject.Resolve(VmbRoot)`, never the raw
+preferred setting when downstream execution would use the fallback.
+
 ### Default: prefer the launcher for everything
 
 `VMBLauncher.exe` remains the engineered build/deploy/upload boundary across

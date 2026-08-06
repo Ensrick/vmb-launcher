@@ -2,7 +2,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class ProcessRunnerTests
+public class ProcessRunnerTests : MutationTestBase
 {
     [Fact]
     public async Task RunAsync_captures_stdout()

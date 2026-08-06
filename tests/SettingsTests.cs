@@ -26,7 +26,11 @@ public class SettingsTests
         s.SteamRoot = @"C:\Program Files (x86)\Steam";
         s.ConfirmedFirstRun = true;
         s.WorkshopIdOverrides["my_mod"] = "999";
-        s.Save();
+        using (MachineTransactionLease.Enter(
+            "settings-test", mod: null, t.Path,
+            recordPath: Path.Combine(t.Path, "owner.json"),
+            mutexName: @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N")))
+            s.Save();
 
         // Read back via the same redirected path.
         var raw = File.ReadAllText(path);
@@ -66,6 +70,17 @@ public class SettingsTests
     }
 
     [Fact]
+    public void Save_without_machine_transaction_fails_before_mutation()
+    {
+        using var t = new TempDir();
+        var path = Path.Combine(t.Path, "new-parent", "settings.json");
+        var s = NewWithTempPath(path);
+        Assert.Throws<InvalidOperationException>(() => s.Save());
+        Assert.False(File.Exists(path));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
+    }
+
+    [Fact]
     public void Load_corrupt_file_returns_fresh_instance()
     {
         // Settings.Load is fixed to DefaultConfigPath; we can't redirect it easily for this test.
@@ -76,5 +91,40 @@ public class SettingsTests
         // Reflectively call the private logic by mimicking what Load does on a parse failure:
         // it returns a fresh Settings. We simulate by trying to parse and confirming parse fails.
         Assert.ThrowsAny<Exception>(() => System.Text.Json.JsonSerializer.Deserialize<Settings>(File.ReadAllText(p)));
+    }
+
+    [Fact]
+    public void StrictMutationLoadRejectsMalformedExistingFileWithoutChangingBytes()
+    {
+        using var t = new TempDir();
+        var path = Path.Combine(t.Path, "settings.json");
+        var bytes = System.Text.Encoding.UTF8.GetBytes("{ truncated");
+        File.WriteAllBytes(path, bytes);
+
+        var ex = Assert.Throws<InvalidDataException>(() => Settings.LoadForMutation(path));
+        Assert.Contains("Refusing mutation", ex.Message);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void StrictGuiMutationReloadRejectsUnreadableExistingFileBeforeAutofillOrSave()
+    {
+        using var t = new TempDir();
+        var path = Path.Combine(t.Path, "settings.json");
+        File.WriteAllText(path, "{}");
+        var stale = Settings.Load(path);
+        var record = Path.Combine(t.Path, "owner.json");
+        var mutex = @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N");
+
+        using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Throws<InvalidDataException>(() => GuiActionTransaction.Enter(
+                stale, "gui-build", "fixture-mod", timeout: TimeSpan.FromSeconds(1),
+                recordPath: record, mutexName: mutex));
+            Assert.Equal(2, locked.Length);
+        }
+
+        Assert.Equal("{}", File.ReadAllText(path));
+        Assert.False(File.Exists(record));
     }
 }
