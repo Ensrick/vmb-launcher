@@ -1,3 +1,4 @@
+using System.IO;
 using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
@@ -311,5 +312,98 @@ public class PublicationReceiptGateTests
             null, staged, mod, @"C:\missing", @"C:\missing\ugc_tool.exe", Now);
         Assert.False(result.Ok);
         Assert.Contains("claim alone", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseSuccessfulHostedQaCheck_FindsQaGateOnLaterPage()
+    {
+        var older = Now.AddMinutes(-4);
+        var newer = Now.AddMinutes(-2);
+        var json = $$"""
+        [
+          {
+            "total_count": 102,
+            "check_runs": [
+              {
+                "name": "tracker-guard",
+                "head_sha": "{{Sha}}",
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "{{older:O}}",
+                "html_url": "https://example.invalid/check/tracker"
+              }
+            ]
+          },
+          {
+            "total_count": 102,
+            "check_runs": [
+              {
+                "name": "qa-gate",
+                "head_sha": "{{Sha}}",
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "{{newer:O}}",
+                "html_url": "https://example.invalid/check/qa-page-2"
+              }
+            ]
+          }
+        ]
+        """;
+
+        var result = PublicationReceiptGate.ParseSuccessfulHostedQaCheck(json, Sha);
+
+        Assert.Equal("https://example.invalid/check/qa-page-2", result.Url);
+        Assert.Equal(newer, result.Completed);
+    }
+
+    [Fact]
+    public void ParseSuccessfulHostedQaCheck_SelectsNewestExactSuccessfulRun()
+    {
+        var older = Now.AddMinutes(-5);
+        var newer = Now.AddMinutes(-1);
+        var wrongSha = new string('f', 40);
+        var json = $$"""
+        [
+          {
+            "check_runs": [
+              { "name": "qa-gate", "head_sha": "{{Sha}}", "status": "completed", "conclusion": "success", "completed_at": "{{older:O}}", "html_url": "https://example.invalid/check/old" },
+              { "name": "qa-gate", "head_sha": "{{wrongSha}}", "status": "completed", "conclusion": "success", "completed_at": "{{newer:O}}", "html_url": "https://example.invalid/check/wrong-sha" }
+            ]
+          },
+          {
+            "check_runs": [
+              { "name": "qa-gate", "head_sha": "{{Sha}}", "status": "completed", "conclusion": "failure", "completed_at": "{{newer:O}}", "html_url": "https://example.invalid/check/failed" },
+              { "name": "qa-gate", "head_sha": "{{Sha}}", "status": "completed", "conclusion": "success", "completed_at": "{{newer:O}}", "html_url": "https://example.invalid/check/new" }
+            ]
+          }
+        ]
+        """;
+
+        var result = PublicationReceiptGate.ParseSuccessfulHostedQaCheck(json, Sha);
+
+        Assert.Equal("https://example.invalid/check/new", result.Url);
+        Assert.Equal(newer, result.Completed);
+    }
+
+    [Fact]
+    public void ParseSuccessfulHostedQaCheck_FailsClosedOnMalformedPage()
+    {
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.ParseSuccessfulHostedQaCheck("[{}]", Sha));
+
+        Assert.Contains("malformed", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseSuccessfulHostedQaCheck_FailsClosedWithoutExactSuccess()
+    {
+        var json = $$"""
+        [{"check_runs":[{"name":"qa-gate","head_sha":"{{Sha}}","status":"completed","conclusion":"failure","completed_at":"{{Now:O}}","html_url":"https://example.invalid/check/failed"}]}]
+        """;
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.ParseSuccessfulHostedQaCheck(json, Sha));
+
+        Assert.Contains("No successful hosted qa-gate", error.Message);
     }
 }
