@@ -1,5 +1,17 @@
 # VMB Launcher Changelog
 
+## v0.5.9 (2026-08-06)
+
+### Fixed: exact-master QA lookup now consumes every check-run page
+
+- The publication receipt gate now requests all REST pages with GitHub CLI's
+  headless `--paginate --slurp` mode and the documented 100-row page size.
+- The launcher independently rechecks the check name, exact source SHA,
+  completed status, successful conclusion, and completion time across the full
+  response before selecting the newest qualifying `qa-gate` run.
+- Malformed pages and responses without an exact successful run still fail
+  closed. Regression coverage places the only valid `qa-gate` on page two.
+
 ## v0.5.8 (2026-07-27)
 
 ### Fixed: default verification is noninteractive and nonmutating

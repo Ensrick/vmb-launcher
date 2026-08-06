@@ -673,31 +673,16 @@ public static class PublicationReceiptGate
             .OrderBy(n => n)
             .FirstOrDefault();
 
-        // Server-side check_name filter plus the maximum page size: the unfiltered
-        // first page holds 30 runs, so unrelated checks on a busy commit could bury
-        // the qa-gate run and fail the gate closed on a fully authorized ship.
-        // The client-side name/head_sha/status/conclusion filters below stay as an
-        // independent recheck of whatever the API returns.
-        using var checksDoc = JsonDocument.Parse(Run("gh", new[]
+        // GitHub's check-runs endpoint has no check-name query parameter. Fetch every
+        // page so unrelated lifecycle checks cannot bury qa-gate beyond page one, then
+        // independently recheck every authorization field in-process.
+        var qa = ParseSuccessfulHostedQaCheck(Run("gh", new[]
         {
-            "api", "-H", "Accept: application/vnd.github+json",
+            "api", "--paginate", "--slurp",
+            "-H", "Accept: application/vnd.github+json",
             $"repos/{GitHubRepo}/commits/{sourceCommit}/check-runs" +
-                $"?check_name={Uri.EscapeDataString(QaCheckName)}&per_page=100"
-        }));
-        var qa = checksDoc.RootElement.GetProperty("check_runs").EnumerateArray()
-            .Where(c => c.GetProperty("name").GetString() == QaCheckName)
-            .Where(c => SameSha(c.GetProperty("head_sha").GetString(), sourceCommit))
-            .Where(c => c.GetProperty("status").GetString() == "completed")
-            .Where(c => c.GetProperty("conclusion").GetString() == "success")
-            .Where(c => c.TryGetProperty("completed_at", out var completed) && completed.ValueKind == JsonValueKind.String)
-            .Select(c => new
-            {
-                Url = c.GetProperty("html_url").GetString() ?? "",
-                Completed = c.GetProperty("completed_at").GetDateTime().ToUniversalTime(),
-            })
-            .OrderByDescending(c => c.Completed)
-            .FirstOrDefault();
-        if (qa == null) throw new InvalidDataException("No successful hosted qa-gate exists for the receipt source commit.");
+                "?filter=all&per_page=100"
+        }), sourceCommit);
 
         // The live default branch is the only mutable pointer relevant to
         // authorization. Local HEAD/index/worktree are never consulted for
@@ -709,6 +694,44 @@ public static class PublicationReceiptGate
         return new LivePublicationSnapshot(
             top, sourceCommit.ToLowerInvariant(), true, defaultBranch, defaultSha.ToLowerInvariant(),
             mergedPr, qa.Url, qa.Completed);
+    }
+
+    internal static HostedQaCheck ParseSuccessfulHostedQaCheck(
+        string paginatedJson,
+        string sourceCommit)
+    {
+        using var document = JsonDocument.Parse(paginatedJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("GitHub's paginated check-runs response was not an array of pages.");
+
+        var candidates = new List<HostedQaCheck>();
+        foreach (var page in document.RootElement.EnumerateArray())
+        {
+            if (page.ValueKind != JsonValueKind.Object ||
+                !page.TryGetProperty("check_runs", out var runs) ||
+                runs.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("GitHub returned a malformed check-runs page.");
+
+            foreach (var check in runs.EnumerateArray())
+            {
+                if (check.GetProperty("name").GetString() != QaCheckName ||
+                    !SameSha(check.GetProperty("head_sha").GetString(), sourceCommit) ||
+                    check.GetProperty("status").GetString() != "completed" ||
+                    check.GetProperty("conclusion").GetString() != "success" ||
+                    !check.TryGetProperty("completed_at", out var completed) ||
+                    completed.ValueKind != JsonValueKind.String)
+                    continue;
+
+                candidates.Add(new HostedQaCheck(
+                    check.GetProperty("html_url").GetString() ?? "",
+                    completed.GetDateTime().ToUniversalTime()));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(check => check.Completed)
+            .FirstOrDefault()
+            ?? throw new InvalidDataException("No successful hosted qa-gate exists for the receipt source commit.");
     }
 
     private static string Run(string fileName, IReadOnlyList<string> arguments) =>
@@ -750,3 +773,5 @@ public static class PublicationReceiptGate
         System.Text.RegularExpressions.Regex.IsMatch(a.Trim(), "^[0-9a-f]{40}$") &&
         string.Equals(a.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
 }
+
+internal sealed record HostedQaCheck(string Url, DateTime Completed);
