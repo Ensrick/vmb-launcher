@@ -9,6 +9,9 @@ try {
 
     dotnet test "$root\tests\VmbLauncher.Tests.csproj" --nologo
     if ($LASTEXITCODE -ne 0) { throw "Tests failed (exit code $LASTEXITCODE)" }
+
+    & "$root\tests\transaction_wrapper_smoke.ps1"
+    if ($LASTEXITCODE -ne 0) { throw "Transaction wrapper smoke failed (exit code $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }

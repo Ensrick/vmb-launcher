@@ -27,10 +27,12 @@ public sealed class ModRunner
 
     public async Task<RunOutcome> BuildAsync(ModInfo mod, bool clean, CancellationToken ct = default)
     {
+        var project = _settings.ResolveMutationProject();
+        if (project == null) return new RunOutcome(false, "Project folder not configured.");
+        using var transaction = MachineTransactionLease.Enter(
+            "build", mod.Name, project.Root, L);
         var vmb = VmbLocator.Resolve(_settings.VmbRoot);
         if (vmb == null) return new RunOutcome(false, "VMB not configured. Open Settings and set the VMB folder.");
-        var project = VmbProject.Resolve(_settings.ProjectRoot) ?? VmbProject.Resolve(_settings.VmbRoot);
-        if (project == null) return new RunOutcome(false, "Project folder not configured.");
 
         L($"[build] {mod.Name}");
 
@@ -65,6 +67,10 @@ public sealed class ModRunner
 
     public async Task<RunOutcome> DeployAsync(ModInfo mod, bool skipRemote, CancellationToken ct = default)
     {
+        var project = _settings.ResolveMutationProject();
+        if (project == null) return new RunOutcome(false, "Project folder not configured.");
+        using var transaction = MachineTransactionLease.Enter(
+            "deploy", mod.Name, project.Root, L);
         await Task.Yield();
 
         var workshopRoot = _settings.WorkshopContentRoot;
@@ -140,6 +146,10 @@ public sealed class ModRunner
         string? publicationReceiptPath,
         CancellationToken ct = default)
     {
+        var project = _settings.ResolveMutationProject();
+        if (project == null) return new RunOutcome(false, "Project folder not configured.");
+        using var transaction = MachineTransactionLease.Enter(
+            "upload", mod.Name, project.Root, L);
         if (string.IsNullOrEmpty(_settings.UgcToolPath) || !File.Exists(_settings.UgcToolPath))
             return new RunOutcome(false, "ugc_tool.exe not found. Set the path in Settings.");
 
@@ -266,6 +276,8 @@ public sealed class ModRunner
             // old-backup/upload.ps1. Custom staging folders + absolute cfg paths (v0.2.6) produce
             // "generic failure (probably empty content directory)" 0x2 on at least one user's setup.
             StagedUpload staged;
+            try { UploadPathLease.RecoverStaleAclLease(_settings.UgcToolPath!, L); }
+            catch (Exception ex) { return new RunOutcome(false, $"Staging ACL recovery failed: {ex.Message}"); }
             try { staged = UploadStager.Stage(mod, _settings.UgcToolPath!); }
             catch (Exception ex) { return new RunOutcome(false, $"Staging failed: {ex.Message}"); }
             L($"[upload] staged {staged.FilesCopied} file(s) into {staged.StagingDir}");

@@ -3,7 +3,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class ModDiscoveryTests
+public class ModDiscoveryTests : MutationTestBase
 {
     private const string SampleCfg = """
 title = "My Test Mod";

@@ -72,11 +72,45 @@ bootstrap only: it does not mark issues test-ready and retains the machine-globa
 claim until the ID-only reconciliation is reviewed and merged.
 
 The publication guard has a strict two-repository landing order:
-VMBLauncher **0.5.7 must be released and installed first**. Only then may the
-monorepo receipt-schema-3/capability requirement land. `ship.ps1` probes
+VMBLauncher **0.6.0 must be released and installed first**. Only then may the
+monorepo machine-transaction capability requirement land. `ship.ps1` probes
 `capabilities --no-banner` before any GitHub release mutation and fails closed
-against 0.5.6 or a launcher without the exact-commit-blob, locked upload
-snapshot, and constrained first-upload boundaries.
+against older launchers or one without the machine transaction, crash-safe ACL
+journal, exact-commit-blob, locked upload snapshot, and constrained first-upload
+boundaries.
+
+All mutating launcher actions share
+`Global\Ensrick.VMBLauncher.Transaction.v1`. The lease covers settings
+auto-fill, build, parity checks, deploy, SDK staging, upload, Workshop
+verification, and claim finalization. Direct GUI/CLI actions acquire it; an
+immediate launcher child of canonical `ship.ps1` authenticates and joins the
+parent’s lease. Do not run parallel VMB, launcher, or hand-written staging
+commands around this boundary.
+
+The transaction owner is placed in a named kill-on-close Windows Job before a
+mutating child can spawn. A hard-death contender polls the exact persisted
+Job's `ActiveProcesses` accounting, closes each temporary query handle
+immediately, and proceeds only at zero or when the Job is absent. It does not
+wait for ordinary Job signalling. A normal release authenticates and drains residual descendants
+and deletes its authenticated owner record before unlocking. Every acquisition
+recovers pre-existing durable authority even if the prior sole mutex handle
+vanished and Windows recreated a fresh named object. Only the allowlisted canonical `%WINDIR%\explorer.exe`
+shell boundary may explicitly break away for non-mutating Steam/browser/folder
+UI. Settings paths are read-only until an authenticated transaction-owned save;
+mutating CLI/GUI flows strictly reload after acquisition, reject an existing
+unreadable/malformed config, and bind the lease to the exact resolved project
+root actually used. Canonical `ship.ps1` never
+rewrites shared settings and passes one durable exact-root private `--config`
+to all launcher calls.
+
+Upload ACL recovery is journaled and flushed before mutation and validates
+SID/session/root/path/file identity plus exact descriptors. Never delete the
+owner/ACL journal, manually reset staging ACLs, or parallel-retry around a
+recovery failure.
+Legacy recovery requires the exact launcher deny on both `sample_item` and
+`content`, plus coherent parent/inheritance semantics for every deeper match.
+Failed abandoned-owner recovery re-abandons without leaving a blocked owner
+thread, so later contenders cannot normalize or bypass the failure.
 
 Exit codes:
 

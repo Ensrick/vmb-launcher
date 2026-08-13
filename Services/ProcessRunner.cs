@@ -31,6 +31,8 @@ public static class ProcessRunner
         string? stdinInput = null,
         CancellationToken ct = default)
     {
+        MachineTransactionLease.RequireCurrent("ProcessRunner process creation");
+        ProcessTreeGuard.EnsureCurrentProcessContained();
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
@@ -45,7 +47,6 @@ public static class ProcessRunner
 
         var sbOut = new StringBuilder();
         var sbErr = new StringBuilder();
-
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         if (!proc.Start()) throw new InvalidOperationException($"Failed to start: {fileName}");
 

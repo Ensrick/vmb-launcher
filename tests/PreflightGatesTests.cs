@@ -8,7 +8,7 @@ namespace VmbLauncher.Tests;
 /// (item 2). The localization-gate test plants an unescaped % and asserts the
 /// gate returns an Error verdict (which UploadAsync turns into a blocked upload).
 /// </summary>
-public class PreflightGatesTests
+public class PreflightGatesTests : MutationTestBase
 {
     private static ModInfo MakeMod(string modDir) => new ModInfo
     {

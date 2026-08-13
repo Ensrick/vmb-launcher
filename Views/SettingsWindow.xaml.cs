@@ -8,13 +8,19 @@ namespace VmbLauncher.Views;
 public partial class SettingsWindow : Window
 {
     public Settings Settings { get; private set; }
+    private readonly GuiSettingsTransaction _transaction;
 
-    public SettingsWindow(Settings s)
+    internal SettingsWindow(Settings s, GuiSettingsTransaction? parentTransaction = null)
     {
-        Settings = s;
+        _transaction = parentTransaction?.Borrow("gui-settings-dialog-nested")
+            ?? GuiSettingsTransaction.Enter("gui-settings-dialog");
+        // The object passed by MainWindow may predate another process's save.
+        // Reload only after owning the machine transaction.
+        Settings = _transaction.Reload(s.ConfigPath);
         InitializeComponent();
         Load();
         Loaded += (_, _) => RunDiagnostics();
+        Closed += (_, _) => _transaction.Dispose();
     }
 
     private void Load()
@@ -98,15 +104,15 @@ public partial class SettingsWindow : Window
 
     private void BtnOpenSettingsFile_Click(object sender, RoutedEventArgs e)
     {
-        Settings.Save();
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{Settings.ConfigPath}\"") { UseShellExecute = true }); }
+        _transaction.Save(Settings);
+        try { NonMutationShell.SelectFile(Settings.ConfigPath); }
         catch { }
     }
 
     private void BtnSave_Click(object sender, RoutedEventArgs e)
     {
         Stash();
-        Settings.Save();
+        _transaction.Save(Settings);
         DialogResult = true;
         Close();
     }

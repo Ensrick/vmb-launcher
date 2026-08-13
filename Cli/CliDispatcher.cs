@@ -44,11 +44,33 @@ public static class CliDispatcher
         if (parsed.Verb == "capabilities")
             return CapabilitiesCommand.Run();
 
-        var settings = LoadSettings(parsed.ConfigPath);
-        var changed = settings.AutoFillMissing();
-        if (changed) settings.Save();
+        if (IsMutationVerb(parsed.Verb))
+        {
+            // Acquire before reading global/private settings. A wrapper owner
+            // may already bind an exact root; this wildcard request is refined
+            // and validated immediately after the serialized reload.
+            using var transaction = MachineTransactionLease.Enter(
+                $"cli-{parsed.Verb}", parsed.ModName, projectRoot: null, Console.WriteLine);
+            var settings = LoadSettings(parsed.ConfigPath, forMutation: true);
+            var changed = settings.AutoFillMissing();
+            var project = settings.ResolveMutationProject()
+                ?? throw new InvalidOperationException("Project folder not configured.");
+            MachineTransactionLease.RefineOwnedProjectRoot(project.Root);
+            using var exactScope = MachineTransactionLease.Enter(
+                $"cli-{parsed.Verb}-scope", parsed.ModName, project.Root, Console.WriteLine);
+            if (changed) settings.Save();
+            return Dispatch(parsed, settings);
+        }
 
-        return parsed.Verb switch
+        // Read-only verbs may auto-fill their in-memory view, but never persist
+        // it and therefore never race a settings or ship transaction.
+        var readOnlySettings = LoadSettings(parsed.ConfigPath, forMutation: false);
+        readOnlySettings.AutoFillMissing();
+        return Dispatch(parsed, readOnlySettings);
+    }
+
+    private static int Dispatch(CliArgs parsed, Settings settings) =>
+        parsed.Verb switch
         {
             "build"   => BuildCommand.Run(parsed, settings),
             "deploy"  => DeployCommand.Run(parsed, settings),
@@ -60,15 +82,19 @@ public static class CliDispatcher
             null or "" => MissingVerb(),
             _         => UnknownVerb(parsed.Verb!),
         };
-    }
 
-    private static Settings LoadSettings(string? overridePath)
+    private static bool IsMutationVerb(string? verb) =>
+        verb is "build" or "deploy" or "upload" or "all";
+
+    private static Settings LoadSettings(string? overridePath, bool forMutation)
     {
         if (!string.IsNullOrEmpty(overridePath) && !System.IO.File.Exists(overridePath))
         {
             Console.Error.WriteLine($"vmblauncher: --config path does not exist yet: {overridePath} (a new file will be created on Save)");
         }
-        return Settings.Load(overridePath);
+        return forMutation
+            ? Settings.LoadForMutation(overridePath)
+            : Settings.Load(overridePath);
     }
 
     private static int MissingVerb()

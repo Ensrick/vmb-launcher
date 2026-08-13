@@ -36,14 +36,22 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _settings = Settings.Load();
+        _settings = new Settings();
         Loaded += async (_, _) => await InitialiseAsync();
     }
 
     private async Task InitialiseAsync()
     {
-        var changed = _settings.AutoFillMissing();
-        if (changed) _settings.Save();
+        using (MachineTransactionLease.Enter(
+            "gui-settings-initialize", mod: null, projectRoot: null, Append))
+        {
+            _settings = Settings.LoadForMutation();
+            var changed = _settings.AutoFillMissing();
+            MachineTransactionLease.RefineOwnedProjectRoot(_settings.ProjectRoot);
+            using var exactScope = MachineTransactionLease.Enter(
+                "gui-settings-initialize-scope", mod: null, _settings.ProjectRoot, Append);
+            if (changed) _settings.Save();
+        }
 
         UpdateVmbInfoBar();
 
@@ -59,7 +67,7 @@ public partial class MainWindow : Window
             // until MainWindow becomes visible.
             var welcome = new FirstRunWindow(_settings);
             welcome.ShowDialog();
-            _settings.Save();
+            _settings = welcome.Settings;
             Visibility = System.Windows.Visibility.Visible;
             Activate();
             UpdateVmbInfoBar();
@@ -89,7 +97,7 @@ public partial class MainWindow : Window
         {
             var dlg = new FirstRunWindow(_settings) { Owner = this };
             dlg.ShowDialog();
-            _settings.Save();
+            _settings = dlg.Settings;
             UpdateVmbInfoBar();
         }
         return false;
@@ -160,8 +168,16 @@ public partial class MainWindow : Window
         SetStatus($"{label}: {_current.Info.Name}...");
         try
         {
+            var selectedName = _current.Info.Name;
+            using var transaction = GuiActionTransaction.Enter(
+                _settings, $"gui-{label.ToLowerInvariant()}", selectedName, Append);
+            _settings = transaction.Settings;
+            var selected = ModDiscovery.ScanMods(_settings)
+                .FirstOrDefault(m => m.Name == selectedName)
+                ?? throw new InvalidOperationException(
+                    $"{selectedName} is not present under the current project root.");
             var runner = new ModRunner(_settings, Append);
-            var outcome = await action(runner, _current.Info, _runCts.Token);
+            var outcome = await action(runner, selected, _runCts.Token);
             if (outcome.Ok)
             {
                 Append($"[{label.ToLowerInvariant()}] {outcome.Message}");
@@ -173,7 +189,7 @@ public partial class MainWindow : Window
                 SetStatus($"{label} failed");
                 MessageBox.Show(this, outcome.Message, $"{label} failed", MessageBoxButton.OK, MessageBoxImage.Error);
             }
-            var fresh = ModDiscovery.ScanMods(_settings).FirstOrDefault(m => m.Name == _current.Info.Name);
+            var fresh = ModDiscovery.ScanMods(_settings).FirstOrDefault(m => m.Name == selectedName);
             if (fresh != null)
             {
                 CopyTo(fresh, _current.Info);
@@ -250,7 +266,6 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() == true)
         {
             _settings = dlg.Settings;
-            _settings.Save();
             UpdateVmbInfoBar();
             Task.Run(LoadMods);
         }
@@ -275,14 +290,14 @@ public partial class MainWindow : Window
     private void BtnSubscribe_Click(object sender, RoutedEventArgs e)
     {
         if (_current == null || string.IsNullOrEmpty(_current.Info.PublishedId)) return;
-        try { Process.Start(new ProcessStartInfo($"steam://url/CommunityFilePage/{_current.Info.PublishedId}") { UseShellExecute = true }); }
+        try { NonMutationShell.Open($"steam://url/CommunityFilePage/{_current.Info.PublishedId}"); }
         catch (Exception ex) { Append($"Failed to open Steam URL: {ex.Message}"); }
     }
 
     private void BtnOpenFolder_Click(object sender, RoutedEventArgs e)
     {
         if (_current == null) return;
-        try { Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_current.Info.ModDir}\"") { UseShellExecute = true }); }
+        try { NonMutationShell.Open(_current.Info.ModDir); }
         catch (Exception ex) { Append($"Failed to open folder: {ex.Message}"); }
     }
 }

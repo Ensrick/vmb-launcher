@@ -3,7 +3,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class ModScaffolderTests
+public class ModScaffolderTests : MutationTestBase
 {
     private sealed class FakeVmb : IDisposable
     {

@@ -120,6 +120,7 @@ public static class ModDiscovery
     /// <summary>Atomically rewrite itemV2.cfg preserving unknown fields.</summary>
     public static void WriteItemCfg(ModInfo info)
     {
+        MachineTransactionLease.RequireCurrent("itemV2.cfg write");
         var raw = File.Exists(info.ItemCfgPath) ? File.ReadAllText(info.ItemCfgPath) : DefaultCfgTemplate();
         raw = ReplaceStringField(raw, "title", info.Title);
         raw = ReplaceStringField(raw, "description", info.Description);

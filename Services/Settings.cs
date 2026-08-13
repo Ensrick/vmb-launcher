@@ -32,11 +32,34 @@ public sealed class Settings
     public static string DefaultConfigPath()
     {
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VMBLauncher");
-        Directory.CreateDirectory(dir);
         return Path.Combine(dir, "settings.json");
     }
 
     public static Settings Load() => Load(null);
+
+    /// <summary>
+    /// Strict load for any flow that may later mutate settings, a project, or
+    /// publication state. A missing file is a valid first-run state; an
+    /// existing file that cannot be read and decoded is not silently replaced.
+    /// </summary>
+    public static Settings LoadForMutation(string? explicitPath = null)
+    {
+        var path = string.IsNullOrEmpty(explicitPath) ? DefaultConfigPath() : explicitPath;
+        if (!File.Exists(path)) return new Settings { ConfigPath = path };
+        try
+        {
+            var json = File.ReadAllText(path);
+            var settings = JsonSerializer.Deserialize<Settings>(json)
+                ?? throw new InvalidDataException("settings decoded to null");
+            settings.ConfigPath = path;
+            return settings;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidDataException(
+                $"Refusing mutation: existing settings file '{path}' is unreadable or malformed ({ex.Message}).", ex);
+        }
+    }
 
     /// <summary>
     /// Load settings from <paramref name="explicitPath"/> if given, else from the default
@@ -66,12 +89,33 @@ public sealed class Settings
 
     public void Save()
     {
+        MachineTransactionLease.RequireCurrent("Settings.Save");
+        var parent = Path.GetDirectoryName(Path.GetFullPath(ConfigPath))
+            ?? throw new InvalidOperationException("Settings path has no parent directory.");
+        Directory.CreateDirectory(parent);
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
         {
             WriteIndented = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         });
-        File.WriteAllText(ConfigPath, json);
+        var temporary = ConfigPath + ".tmp." + Environment.ProcessId + "." + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var stream = new FileStream(
+                temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false)))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, ConfigPath, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+        }
     }
 
     /// <summary>Auto-detect any unset fields and persist if anything changed.</summary>
@@ -131,4 +175,8 @@ public sealed class Settings
 
         return changed;
     }
+
+    /// <summary>The exact project root downstream mutation will use.</summary>
+    internal VmbProject? ResolveMutationProject() =>
+        VmbProject.Resolve(ProjectRoot) ?? VmbProject.Resolve(VmbRoot);
 }

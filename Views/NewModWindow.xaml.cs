@@ -8,7 +8,7 @@ namespace VmbLauncher.Views;
 
 public partial class NewModWindow : Window
 {
-    private readonly Settings _settings;
+    private Settings _settings;
     private readonly Action<string> _log;
     // Looser than VMB convention but matches what Windows allows for a folder name.
     // Name must start with a letter and contain only letters/digits/underscore. 2-64 chars.
@@ -105,8 +105,6 @@ public partial class NewModWindow : Window
 
     private async void BtnCreate_Click(object sender, RoutedEventArgs e)
     {
-        var vmb = VmbLocator.Resolve(_settings.VmbRoot);
-        if (vmb == null) { MessageBox.Show(this, "VMB not configured.", "VMB Launcher"); return; }
         var name = TbName.Text.Trim();
         var title = string.IsNullOrWhiteSpace(TbTitle.Text) ? name : TbTitle.Text.Trim();
         var desc = TbDesc.Text;
@@ -122,8 +120,12 @@ public partial class NewModWindow : Window
             if (r != MessageBoxResult.Yes) return;
         }
 
-        var project = VmbProject.Resolve(_settings.ProjectRoot) ?? VmbProject.Resolve(_settings.VmbRoot);
-        if (project == null) { MessageBox.Show(this, "Project folder not configured.", "VMB Launcher"); return; }
+        using var transaction = GuiActionTransaction.Enter(
+            _settings, "gui-new-mod", name, _log);
+        _settings = transaction.Settings;
+        var vmb = VmbLocator.Resolve(_settings.VmbRoot);
+        if (vmb == null) { MessageBox.Show(this, "VMB not configured.", "VMB Launcher"); return; }
+        var project = transaction.Project;
 
         var modDir = Path.Combine(project.ModsDir, name);
         if (Directory.Exists(modDir))

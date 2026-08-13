@@ -64,6 +64,7 @@ public sealed class VmbDownloader
 
     public async Task<InstallResult> DownloadAndInstallAsync(IProgress<DownloadProgress>? progress, CancellationToken ct = default)
     {
+        MachineTransactionLease.RequireCurrent("VMB download/install");
         try
         {
             progress?.Report(new(0, null, "Looking up latest VMB release..."));

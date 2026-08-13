@@ -5,8 +5,22 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class UploadStagerTests
+public class UploadStagerTests : MutationTestBase
 {
+    [Fact]
+    public void StageFailsClosedWhenOldTreeCannotBeDeleted()
+    {
+        using var fake = new FakeSdk();
+        var first = UploadStager.Stage(fake.Mod, fake.UgcToolPath);
+        var heldPath = Path.Combine(first.StagingDir, "content", "mymod.mod");
+        using var held = new FileStream(
+            heldPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var ex = Assert.Throws<IOException>(() =>
+            UploadStager.Stage(fake.Mod, fake.UgcToolPath));
+        Assert.Contains("Refusing to mix stale and current upload bytes", ex.Message);
+    }
+
     private sealed class FakeSdk : IDisposable
     {
         public TempDir SdkDir { get; }

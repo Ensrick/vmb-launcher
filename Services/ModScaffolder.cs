@@ -21,6 +21,7 @@ public static class ModScaffolder
 {
     public static ScaffoldResult Scaffold(VmbInstall vmb, VmbProject project, ModScaffoldRequest req)
     {
+        MachineTransactionLease.RequireCurrent("Mod scaffolding");
         if (string.IsNullOrWhiteSpace(req.Name))
             return new ScaffoldResult(false, "Name is empty.");
 

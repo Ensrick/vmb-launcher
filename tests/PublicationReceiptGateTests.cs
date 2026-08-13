@@ -3,7 +3,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class PublicationReceiptGateTests
+public class PublicationReceiptGateTests : MutationTestBase
 {
     private static readonly DateTime Now = new(2026, 7, 26, 18, 0, 0, DateTimeKind.Utc);
     private const string Sha = "0123456789abcdef0123456789abcdef01234567";

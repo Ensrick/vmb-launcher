@@ -4,7 +4,7 @@ using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
 
-public class CommitPublicationSnapshotTests
+public class CommitPublicationSnapshotTests : MutationTestBase
 {
     [Fact]
     public void ReadCommitSnapshot_IgnoresHeadAndWorkingTreeSwap()
