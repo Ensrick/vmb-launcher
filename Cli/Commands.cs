@@ -139,6 +139,7 @@ internal static class CapabilitiesCommand
     internal const string ConstrainedBootstrap = "constrained-first-upload-bootstrap-v1";
     internal const string MachineTransactionLease = "machine-transaction-lease-v1";
     internal const string CrashSafeUploadAclJournal = "crash-safe-upload-acl-journal-v1";
+    internal const string ReceiptAuthorityPublication = "receipt-authority-publication-v1";
 
     internal static IReadOnlyList<string> Lines()
     {
@@ -148,7 +149,7 @@ internal static class CapabilitiesCommand
             $"capability_schema={CapabilitySchema}",
             $"version={version}",
             $"publication_receipt_schema={PublicationReceiptSchema}",
-            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap},{MachineTransactionLease},{CrashSafeUploadAclJournal}",
+            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap},{MachineTransactionLease},{CrashSafeUploadAclJournal},{ReceiptAuthorityPublication}",
         };
     }
 

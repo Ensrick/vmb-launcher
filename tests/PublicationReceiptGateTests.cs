@@ -1,4 +1,7 @@
 using System.IO;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using VmbLauncher.Services;
 
 namespace VmbLauncher.Tests;
@@ -82,11 +85,76 @@ public class PublicationReceiptGateTests : MutationTestBase
         GitBlob = PreviewBlob,
     };
 
+    private static PublicationBundleAuthorityProof ReceiptAuthorityProof() => new()
+    {
+        Authority = "receipt",
+        SourceCommit = Sha,
+        InventoryGitBlob = new string('5', 40),
+        IgnoreGitBlob = new string('6', 40),
+        RootBundle = "0123456789abcdef.mod_bundle",
+        ByteSource = "materialized_restrictive_handles",
+        BuildReceiptPath = "modx/.build-receipt.json",
+        BuildReceiptGitBlob = new string('7', 40),
+        BuildReceiptSha256 = new string('8', 64),
+        ReceiptSchema = 3,
+        SourceFingerprintSha256 = new string('9', 64),
+        OutputAlgorithm = "vt2-normalized-bundle-output-set-sha256-v1",
+        OutputFingerprintSha256 = new string('a', 64),
+        BuilderName = "VMBLauncher",
+        BuilderVersion = typeof(PublicationReceiptGate).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion,
+        NormalizationPolicyAlgorithm = "exact-build-artifact-exclusions-sha256-v1",
+        NormalizationPolicyFingerprintSha256 = new string('b', 64),
+    };
+
     private static ShipClaimGate.Evaluation MatchingClaim() =>
         new(
             ShipClaimGate.Verdict.Match,
             new ShipClaimGate.ClaimInfo("modx", "1.2.3-dev", Owner, Now.AddHours(-1)),
             null);
+
+    [Fact]
+    public void AuthenticateHostedReceipt_RejectsCallerBytesBeforeUsingHostedAuthority()
+    {
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(
+                "caller"u8.ToArray(),
+                "hosted"u8.ToArray()));
+
+        Assert.Contains("do not match", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AuthenticateHostedReceipt_AcceptsExactExplicitReceiptAuthorityShape()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt);
+
+        var authenticated = PublicationReceiptGate.AuthenticateHostedReceipt(bytes, bytes);
+
+        Assert.Equal("receipt", authenticated.BundleAuthority);
+        Assert.Equal(3, authenticated.BundleAuthorityProof!.ReceiptSchema);
+    }
+
+    [Fact]
+    public void AuthenticateHostedReceipt_RejectsIncompleteExplicitAuthorityProofShape()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        var root = JsonNode.Parse(JsonSerializer.Serialize(receipt))!.AsObject();
+        Assert.True(root["bundle_authority_proof"]!.AsObject().Remove("builder_version"));
+        var bytes = System.Text.Encoding.UTF8.GetBytes(root.ToJsonString());
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(bytes, bytes));
+
+        Assert.Contains("properties are missing", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static PublicationGateResult Evaluate(
         PublicationReceipt? receipt = null,
@@ -100,7 +168,8 @@ public class PublicationReceiptGateTests : MutationTestBase
         IReadOnlyList<PublicationBundleFile>? stagedBundles = null,
         PublicationPreviewFile? sourcePreview = null,
         PublicationPreviewFile? stagedPreview = null,
-        string sourcePublishedId = "123") =>
+        string sourcePublishedId = "123",
+        PublicationBundleAuthorityProof? sourceAuthorityProof = null) =>
         PublicationReceiptGate.EvaluateSnapshot(
             receipt ?? Receipt(),
             live ?? Live(),
@@ -119,7 +188,8 @@ public class PublicationReceiptGateTests : MutationTestBase
             actualStagedCfgHash ?? StagedCfgHash,
             stagedBundles ?? Bundles(),
             stagedPreview ?? Preview(),
-            claim ?? MatchingClaim());
+            claim ?? MatchingClaim(),
+            sourceAuthorityProof);
 
     [Fact]
     public void EvaluateSnapshot_AcceptsExactHostedReceiptAndStaging()
@@ -152,6 +222,18 @@ public class PublicationReceiptGateTests : MutationTestBase
     {
         var result = Evaluate(live: Live(clean: false));
         Assert.True(result.Ok);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_RejectsUntypedAuthorityProof()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+
+        var result = Evaluate(receipt: receipt);
+
+        Assert.False(result.Ok);
+        Assert.Contains("untyped", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -225,6 +307,151 @@ public class PublicationReceiptGateTests : MutationTestBase
         var result = Evaluate(sourceBundles: Bundles(), stagedBundles: staged);
         Assert.False(result.Ok);
         Assert.Contains("SDK-staged content", result.Message);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_AcceptsExactReceiptAuthorityWithoutBundleGitBlobs()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(
+            receipt: receipt,
+            sourceBundles: source,
+            stagedBundles: source,
+            sourceAuthorityProof: ReceiptAuthorityProof());
+
+        Assert.True(result.Ok, result.Message);
+        Assert.Contains("schema-3 build receipt", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_ReceiptAuthorityRejectsMissingIndependentProof()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(receipt: receipt, sourceBundles: source, stagedBundles: source);
+
+        Assert.False(result.Ok);
+        Assert.Contains("independently reconstructed proof", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_ReceiptAuthorityRejectsProofTamper()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        receipt.BundleAuthorityProof.OutputFingerprintSha256 = new string('c', 64);
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(
+            receipt: receipt,
+            sourceBundles: source,
+            stagedBundles: source,
+            sourceAuthorityProof: ReceiptAuthorityProof());
+
+        Assert.False(result.Ok);
+        Assert.Contains("output fingerprint", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_ReceiptAuthorityRejectsClaimedBundleGitBlob()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(
+            receipt: receipt,
+            sourceBundles: source,
+            stagedBundles: source,
+            sourceAuthorityProof: ReceiptAuthorityProof());
+
+        Assert.False(result.Ok);
+        Assert.Contains("must not claim Git bundle blobs", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_ReceiptAuthorityRejectsFirstUploadBootstrap()
+    {
+        var receipt = Receipt();
+        receipt.Purpose = "workshop_bootstrap";
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(
+            receipt: receipt,
+            sourcePublishedId: "0",
+            sourceBundles: source,
+            stagedBundles: source,
+            sourceAuthorityProof: ReceiptAuthorityProof());
+
+        Assert.False(result.Ok);
+        Assert.Contains("does not support first-upload bootstrap", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("00")]
+    [InlineData("000")]
+    [InlineData("18446744073709551616")]
+    public void EvaluateSnapshot_ReceiptAuthorityRejectsNoncanonicalOrOverflowingPublishedId(string publishedId)
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var bundle in receipt.BundleFiles) bundle.GitBlob = "";
+        var source = Bundles();
+        foreach (var bundle in source) bundle.GitBlob = "";
+
+        var result = Evaluate(
+            receipt: receipt,
+            sourcePublishedId: publishedId,
+            sourceBundles: source,
+            stagedBundles: source,
+            sourceAuthorityProof: ReceiptAuthorityProof());
+
+        Assert.False(result.Ok);
+        Assert.Contains("canonical positive", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateSnapshot_ExplicitTrackedAuthorityRequiresItsIndependentProof()
+    {
+        var receipt = Receipt();
+        receipt.BundleAuthority = "tracked";
+        receipt.BundleAuthorityProof = new PublicationBundleAuthorityProof
+        {
+            Authority = "tracked",
+            SourceCommit = Sha,
+            InventoryGitBlob = new string('5', 40),
+            IgnoreGitBlob = new string('6', 40),
+            RootBundle = "0123456789abcdef.mod_bundle",
+            ByteSource = "git_commit_blobs",
+            OutputAlgorithm = "vt2-normalized-bundle-output-set-sha256-v1",
+            OutputFingerprintSha256 = new string('a', 64),
+        };
+
+        var result = Evaluate(receipt: receipt);
+
+        Assert.False(result.Ok);
+        Assert.Contains("independently reconstructed proof", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -147,8 +147,13 @@ public class TransactionMutationCensusTests
             "Services/ProcessTreeGuard.cs:180:14:1:CreateProcessW",
             "Services/ProcessTreeGuard.cs:254:19:1:CreateJobObjectW",
             "Services/ProcessTreeGuard.cs:260:18:1:AssignProcessToJobObject",
-            "Services/PublicationReceiptGate.cs:754:29:1:Process.Start",
-            "Services/PublicationReceiptGate.cs:756:26:1:stream.CopyTo",
+            "Services/PublicationReceiptGate.cs:904:29:1:Process.Start",
+            "Services/PublicationReceiptGate.cs:906:26:1:stream.CopyTo",
+            // Receipt authority reconstructs source checkout bytes through the
+            // committed blobs and a constrained in-memory EOL transform; it
+            // adds no filesystem mutation site.
+            "Services/ReceiptAuthorityCommitProof.cs:730:38:1:stream.Write",
+            "Services/ReceiptAuthorityCommitProof.cs:731:13:1:stream.Write",
             "Services/Settings.cs:95:9:1:Directory API",
             "Services/Settings.cs:104:33:1:new FileStream",
             "Services/Settings.cs:107:33:1:new StreamWriter",
@@ -192,7 +197,7 @@ public class TransactionMutationCensusTests
             "Services/VmbDownloader.cs:134:25:1:File API",
             "Services/VmbDownloader.cs:141:19:1:stream.Write",
         };
-        Assert.Equal(73, expected.Count);
+        Assert.Equal(75, expected.Count);
 
         Assert.True(expected.SetEquals(actual),
             "Production filesystem/process/job/ACL census drifted.\n" +

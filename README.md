@@ -71,13 +71,22 @@ owned by another mod are rejected. The outer ship treats this as identity
 bootstrap only: it does not mark issues test-ready and retains the machine-global
 claim until the ID-only reconciliation is reviewed and merged.
 
+For generated-output mods, an explicit `bundle_authority = receipt` receipt
+additionally binds the committed inventory and ignore state, strict schema-3
+build receipt, source-blob/build-byte map, complete normalized output map,
+exact executing builder, and normalization policy. Bundle records carry path/length/SHA-256 but
+no invented Git blob; the exact map must match the pinned SDK staging bytes.
+Receipt-authority first-upload bootstrap remains disabled. Tracked hosted
+receipts retain their exact legacy top-level contract and Git-commit-blob path.
+
 The publication guard has a strict two-repository landing order:
-VMBLauncher **0.6.0 must be released and installed first**. Only then may the
+VMBLauncher **0.6.1 must be released and installed first**. Only then may the
 monorepo machine-transaction capability requirement land. `ship.ps1` probes
 `capabilities --no-banner` before any GitHub release mutation and fails closed
 against older launchers or one without the machine transaction, crash-safe ACL
 journal, exact-commit-blob, locked upload snapshot, and constrained first-upload
-boundaries.
+boundaries. Receipt-authority publication additionally requires
+`receipt-authority-publication-v1`.
 
 All mutating launcher actions share
 `Global\Ensrick.VMBLauncher.Transaction.v1`. The lease covers settings

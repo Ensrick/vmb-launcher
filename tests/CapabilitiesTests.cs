@@ -17,6 +17,7 @@ public class CapabilitiesTests
                     line.Contains("git-commit-blob-snapshot-v1", StringComparison.Ordinal) &&
                     line.Contains("constrained-first-upload-bootstrap-v1", StringComparison.Ordinal) &&
                     line.Contains("machine-transaction-lease-v1", StringComparison.Ordinal) &&
-                    line.Contains("crash-safe-upload-acl-journal-v1", StringComparison.Ordinal));
+                    line.Contains("crash-safe-upload-acl-journal-v1", StringComparison.Ordinal) &&
+                    line.Contains("receipt-authority-publication-v1", StringComparison.Ordinal));
     }
 }

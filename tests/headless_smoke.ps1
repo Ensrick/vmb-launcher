@@ -96,6 +96,7 @@ Record 'capabilities advertises exact Git commit blobs' ($r.Output -match 'git-c
 Record 'capabilities advertises constrained first-upload bootstrap' ($r.Output -match 'constrained-first-upload-bootstrap-v1')
 Record 'capabilities advertises machine transaction lease' ($r.Output -match 'machine-transaction-lease-v1')
 Record 'capabilities advertises crash-safe upload ACL journal' ($r.Output -match 'crash-safe-upload-acl-journal-v1')
+Record 'capabilities advertises receipt-authority publication' ($r.Output -match 'receipt-authority-publication-v1')
 
 $r = Run @('help')
 Record 'help exits 0' ($r.Code -eq 0)

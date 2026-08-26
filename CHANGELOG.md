@@ -1,5 +1,25 @@
 # VMB Launcher Changelog
 
+## v0.6.1 (2026-08-26)
+
+### Added: fail-closed publication for receipt-authority bundles (#1426)
+
+- Hosted schema-3 publication receipts may carry an explicit receipt-authority
+  discriminator and proof. Tracked receipts preserve their exact legacy
+  top-level contract and existing Git-blob path.
+- Explicit `receipt` authority reconstructs the committed inventory,
+  `.gitignore`, strict schema-3 build receipt, complete source map, normalized
+  output map, exact executing builder, and normalization policy. Checkout-byte
+  hashes are reconstructed from committed blobs under a narrow committed
+  LF/CRLF/binary attribute policy, without worktree, Git config/filter, or
+  temporary-path inputs, and compared to the receipt's build-byte map.
+- Generated bundle records must carry no Git-blob claim. Their one canonical
+  path/length/SHA-256 map must match the committed build receipt and the pinned
+  SDK staging bytes exactly; tracked bundle blobs in receipt mode fail closed.
+- `receipt-authority-publication-v1` advertises the new boundary. No deploy,
+  updater, recovery, GUI publication, or caller-authored receipt path was
+  enabled, and receipt-authority first-upload bootstrap remains disabled.
+
 ## v0.6.0 (2026-08-06)
 
 ### Fixed: one machine transaction and crash-safe SDK staging ACLs (#1180)
