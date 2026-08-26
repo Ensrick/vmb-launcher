@@ -24,6 +24,8 @@ public sealed class PublicationReceipt
     [JsonPropertyName("owner")] public string Owner { get; set; } = "";
     [JsonPropertyName("item_cfg_sha256")] public string ItemCfgSha256 { get; set; } = "";
     [JsonPropertyName("item_cfg_git_blob")] public string ItemCfgGitBlob { get; set; } = "";
+    [JsonPropertyName("bundle_authority")] public string BundleAuthority { get; set; } = "";
+    [JsonPropertyName("bundle_authority_proof")] public PublicationBundleAuthorityProof? BundleAuthorityProof { get; set; }
     [JsonPropertyName("bundle_files")] public List<PublicationBundleFile> BundleFiles { get; set; } = new();
     [JsonPropertyName("preview_file")] public PublicationPreviewFile PreviewFile { get; set; } = new();
     [JsonPropertyName("authorization")] public PublicationAuthorization Authorization { get; set; } = new();
@@ -53,7 +55,11 @@ internal sealed record CommitPublicationSnapshot(
     string Version,
     string PublishedId,
     IReadOnlyList<PublicationBundleFile> BundleFiles,
-    PublicationPreviewFile PreviewFile);
+    PublicationPreviewFile PreviewFile)
+{
+    internal string BundleAuthority { get; init; } = "tracked";
+    internal PublicationBundleAuthorityProof? BundleAuthorityProof { get; init; }
+}
 
 public sealed class PublicationAuthorization
 {
@@ -169,7 +175,7 @@ internal sealed class VerifiedPublicationReceipt : IDisposable
 /// caller's local file is accepted only when its bytes match the independently
 /// downloaded asset. Source and SDK-staged bytes are then checked separately.
 /// </summary>
-public static class PublicationReceiptGate
+public static partial class PublicationReceiptGate
 {
     public const int Schema = 3;
     public const string GitHubRepo = "Ensrick/vermintide-2-tweaker";
@@ -231,15 +237,17 @@ public static class PublicationReceiptGate
 
             var hostedBytes = QueryHostedReceipt(
                 receipt.Repository, receipt.ReleaseTag, receipt.ReceiptAssetName);
-            _ = DeserializeReceipt(hostedBytes);
+            receipt = AuthenticateHostedReceipt(callerBytes, hostedBytes);
 
             // Read the immutable Git object database, never the mutable index or
             // working tree. The receipt's source_commit selects the tree and
             // every proof below is reconstructed from that tree's exact blobs.
             var repositoryRoot = Run(
                 "git", new[] { "-C", mod.ModDir, "rev-parse", "--show-toplevel" }).Trim();
-            var committed = ReadCommitSnapshot(
-                repositoryRoot, receipt.SourceCommit, receipt.Mod);
+            var committed = string.IsNullOrEmpty(receipt.BundleAuthority)
+                ? ReadCommitSnapshot(repositoryRoot, receipt.SourceCommit, receipt.Mod)
+                : ReadAuthorizedCommitSnapshot(
+                    repositoryRoot, receipt.SourceCommit, receipt.Mod, receipt.BundleAuthority);
             if (string.IsNullOrWhiteSpace(committed.PublishedId))
                 throw new InvalidDataException(
                     "Exact source-commit itemV2.cfg has no published_id field.");
@@ -277,7 +285,8 @@ public static class PublicationReceiptGate
                 lease.CfgSha256,
                 lease.BundleFiles,
                 lease.PreviewFile,
-                claim);
+                claim,
+                committed.BundleAuthorityProof);
             if (!evaluated.Ok)
             {
                 lease.Dispose();
@@ -325,7 +334,8 @@ public static class PublicationReceiptGate
         string actualStagedCfgHash,
         IReadOnlyList<PublicationBundleFile> stagedBundles,
         PublicationPreviewFile stagedPreview,
-        ShipClaimGate.Evaluation claim)
+        ShipClaimGate.Evaluation claim,
+        PublicationBundleAuthorityProof? sourceBundleAuthorityProof = null)
     {
         if (!SameHash(callerReceiptHash, hostedReceiptHash))
             return new(false, "Caller receipt bytes do not match the independently downloaded GitHub release asset.");
@@ -383,7 +393,37 @@ public static class PublicationReceiptGate
         if (!SameHash(receipt.ItemCfgSha256, sourceCfgHash) ||
             !SameGitBlob(receipt.ItemCfgGitBlob, sourceCfgGitBlob))
             return new(false, "Receipt itemV2.cfg proof does not match the exact source-commit blob.");
-        var sourceResult = CompareBundleFiles(receipt.BundleFiles, sourceBundles, "source commit", requireGitBlob: true);
+        var authority = string.IsNullOrEmpty(receipt.BundleAuthority)
+            ? "tracked"
+            : receipt.BundleAuthority;
+        if (string.IsNullOrEmpty(receipt.BundleAuthority) && receipt.BundleAuthorityProof != null)
+            return new(false, "Legacy tracked receipt cannot carry an untyped bundle-authority proof.");
+        if (authority != "tracked" && authority != "receipt")
+            return new(false, $"Receipt bundle authority '{authority}' is not supported.");
+        if (authority == "receipt" && !IsCanonicalPositivePublishedId(sourcePublishedId))
+            return new(false,
+                "Receipt-authority publication requires a canonical positive published_id and does not support first-upload bootstrap.");
+
+        if (!string.IsNullOrEmpty(receipt.BundleAuthority))
+        {
+            var authorityResult = CompareBundleAuthorityProof(
+                receipt.BundleAuthorityProof,
+                sourceBundleAuthorityProof,
+                authority,
+                receipt.SourceCommit);
+            if (!authorityResult.Ok) return authorityResult;
+        }
+
+        if (authority == "receipt" &&
+            (receipt.BundleFiles.Any(file => !string.IsNullOrEmpty(file.GitBlob)) ||
+             sourceBundles.Any(file => !string.IsNullOrEmpty(file.GitBlob))))
+            return new(false, "Receipt-authority output records must not claim Git bundle blobs.");
+
+        var sourceResult = CompareBundleFiles(
+            receipt.BundleFiles,
+            sourceBundles,
+            authority == "tracked" ? "source commit" : "schema-3 build receipt",
+            requireGitBlob: authority == "tracked");
         if (!sourceResult.Ok) return sourceResult;
         var sourcePreviewResult = ComparePreviewFile(receipt.PreviewFile, sourcePreview, "source commit", requireGitBlob: true);
         if (!sourcePreviewResult.Ok) return sourcePreviewResult;
@@ -397,9 +437,12 @@ public static class PublicationReceiptGate
         var mode = bootstrap
             ? "first-upload bootstrap"
             : "existing-item upload";
+        var bundleProof = authority == "tracked"
+            ? "source-commit bundle blobs"
+            : "committed schema-3 build receipt";
         return new(
             true,
-            $"GitHub-hosted receipt, live authorization, source-commit blobs, and pinned SDK staging bytes passed ({mode})");
+            $"GitHub-hosted receipt, live authorization, {bundleProof}, and pinned SDK staging bytes passed ({mode})");
     }
 
     private static PublicationGateResult ComparePreviewFile(
@@ -447,17 +490,39 @@ public static class PublicationReceiptGate
         return new(true, $"{context} bundle proof matches");
     }
 
-    private static PublicationReceipt DeserializeReceipt(byte[] bytes) =>
-        JsonSerializer.Deserialize<PublicationReceipt>(bytes, JsonOptions)
-        ?? throw new InvalidDataException("receipt JSON was empty");
+    private static PublicationReceipt DeserializeReceipt(byte[] bytes)
+    {
+        var receipt = JsonSerializer.Deserialize<PublicationReceipt>(bytes, JsonOptions)
+            ?? throw new InvalidDataException("receipt JSON was empty");
+        ValidatePublicationBundleAuthorityJsonShape(bytes, receipt);
+        return receipt;
+    }
+
+    internal static PublicationReceipt AuthenticateHostedReceipt(byte[] callerBytes, byte[] hostedBytes)
+    {
+        if (!callerBytes.AsSpan().SequenceEqual(hostedBytes))
+            throw new InvalidDataException(
+                "Caller receipt bytes do not match the independently downloaded GitHub release asset.");
+        return DeserializeReceipt(hostedBytes);
+    }
 
     private static string HashBytes(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
+    private static bool IsCanonicalPositivePublishedId(string value) =>
+        ulong.TryParse(
+            value,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed) &&
+        parsed > 0 &&
+        value == parsed.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     internal static CommitPublicationSnapshot ReadCommitSnapshot(
         string repositoryRoot,
         string sourceCommit,
-        string modName)
+        string modName,
+        bool allowEmptyBundleFiles = false)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(
                 sourceCommit, "^[0-9a-f]{40}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
@@ -466,18 +531,17 @@ public static class PublicationReceiptGate
             throw new InvalidDataException("Receipt mod name is not canonical.");
 
         var root = NormalizeRoot(repositoryRoot);
-        _ = RunBinary("git", new[] { "-C", root, "cat-file", "-e", $"{sourceCommit}^{{commit}}" });
-        var commitBytes = RunBinary("git", new[] { "-C", root, "cat-file", "commit", sourceCommit });
-        if (!string.Equals(
-                ComputeGitObjectId("commit", commitBytes),
-                sourceCommit,
-                StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Local source commit object bytes do not match source_commit.");
-        var treeBytes = RunBinary("git", new[]
-        {
-            "-C", root, "ls-tree", "-r", "-z", "--full-tree", sourceCommit, "--", modName
-        });
-        var entries = ParseTreeEntries(treeBytes);
+        var entries = ReadVerifiedCommitTree(root, sourceCommit);
+        return ReadCommitSnapshot(root, sourceCommit, modName, allowEmptyBundleFiles, entries);
+    }
+
+    private static CommitPublicationSnapshot ReadCommitSnapshot(
+        string root,
+        string sourceCommit,
+        string modName,
+        bool allowEmptyBundleFiles,
+        IReadOnlyDictionary<string, GitTreeEntry> entries)
+    {
 
         var cfgRepoPath = $"{modName}/itemV2.cfg";
         var cfgEntry = RequireBlob(entries, cfgRepoPath);
@@ -501,7 +565,7 @@ public static class PublicationReceiptGate
                 };
             })
             .ToList();
-        if (bundles.Count == 0)
+        if (bundles.Count == 0 && !allowEmptyBundleFiles)
             throw new InvalidDataException(
                 $"Source commit {sourceCommit} contains no blobs under {bundlePrefix}.");
 
@@ -576,22 +640,102 @@ public static class PublicationReceiptGate
         }
     }
 
-    private static Dictionary<string, GitTreeEntry> ParseTreeEntries(byte[] treeBytes)
+    internal static IReadOnlyDictionary<string, GitTreeEntry> ReadVerifiedCommitTree(
+        string repositoryRoot,
+        string sourceCommit)
     {
+        var root = NormalizeRoot(repositoryRoot);
+        _ = RunBinary("git", new[] { "--no-replace-objects", "-C", root, "cat-file", "-e", $"{sourceCommit}^{{commit}}" });
+        var commitBytes = ReadGitObject(root, "commit", sourceCommit);
+        var lineEnd = Array.IndexOf(commitBytes, (byte)'\n');
+        if (lineEnd != 45 || !commitBytes.AsSpan(0, 5).SequenceEqual("tree "u8))
+            throw new InvalidDataException("Source commit lacks one canonical leading tree header.");
+        var treeId = Encoding.ASCII.GetString(commitBytes, 5, 40);
+        if (!System.Text.RegularExpressions.Regex.IsMatch(treeId, "^[0-9a-f]{40}$"))
+            throw new InvalidDataException("Source commit root tree id is noncanonical.");
+
         var result = new Dictionary<string, GitTreeEntry>(StringComparer.Ordinal);
-        var raw = Encoding.UTF8.GetString(treeBytes);
-        foreach (var record in raw.Split('\0', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var tab = record.IndexOf('\t');
-            if (tab <= 0) throw new InvalidDataException("Git tree output is malformed.");
-            var header = record[..tab].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (header.Length != 3)
-                throw new InvalidDataException("Git tree entry header is malformed.");
-            var entry = new GitTreeEntry(header[0], header[1], header[2].ToLowerInvariant(), record[(tab + 1)..]);
-            if (!result.TryAdd(entry.Path, entry))
-                throw new InvalidDataException($"Git tree contains duplicate path '{entry.Path}'.");
-        }
+        ReadVerifiedTreeRecursive(root, treeId, "", result, 0);
         return result;
+    }
+
+    private static void ReadVerifiedTreeRecursive(
+        string root,
+        string treeId,
+        string prefix,
+        Dictionary<string, GitTreeEntry> result,
+        int depth)
+    {
+        if (depth > 64 || result.Count > 200_000)
+            throw new InvalidDataException("Source commit tree exceeds the bounded proof limits.");
+        var bytes = ReadGitObject(root, "tree", treeId);
+        foreach (var entry in ParseTreeObject(bytes))
+        {
+            var path = prefix.Length == 0 ? entry.Name : $"{prefix}/{entry.Name}";
+            if (entry.Mode == "40000")
+            {
+                ReadVerifiedTreeRecursive(root, entry.ObjectId, path, result, depth + 1);
+                continue;
+            }
+            var type = entry.Mode == "160000" ? "commit" : "blob";
+            if (!result.TryAdd(path, new GitTreeEntry(entry.Mode, type, entry.ObjectId, path)))
+                throw new InvalidDataException($"Git tree contains duplicate path '{path}'.");
+        }
+    }
+
+    internal static IReadOnlyList<RawTreeEntry> ParseTreeObject(byte[] bytes)
+    {
+        var entries = new List<RawTreeEntry>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var foldedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var strictUtf8 = new UTF8Encoding(false, true);
+        var position = 0;
+        while (position < bytes.Length)
+        {
+            var space = Array.IndexOf(bytes, (byte)' ', position);
+            var nul = space < 0 ? -1 : Array.IndexOf(bytes, (byte)0, space + 1);
+            if (space <= position || nul <= space + 1 || nul + 21 > bytes.Length)
+                throw new InvalidDataException("Git tree object is malformed.");
+            var mode = Encoding.ASCII.GetString(bytes, position, space - position);
+            if (mode is not ("40000" or "100644" or "100755" or "120000" or "160000"))
+                throw new InvalidDataException($"Git tree object contains unsupported mode '{mode}'.");
+            string name;
+            try { name = strictUtf8.GetString(bytes, space + 1, nul - space - 1); }
+            catch (DecoderFallbackException ex)
+            {
+                throw new InvalidDataException("Git tree object contains a non-UTF-8 path.", ex);
+            }
+            if (name.Length == 0 || name is "." or ".." || name.Contains('/') || name.Contains('\0'))
+                throw new InvalidDataException("Git tree object contains a noncanonical name.");
+            if (!names.Add(name) || !foldedNames.Add(name))
+                throw new InvalidDataException(
+                    $"Git tree object contains a duplicate or case-colliding sibling name: {name}");
+            var nameBytes = bytes.AsSpan(space + 1, nul - space - 1).ToArray();
+            var objectId = Convert.ToHexString(bytes.AsSpan(nul + 1, 20)).ToLowerInvariant();
+            var entry = new RawTreeEntry(mode, name, objectId, nameBytes);
+            if (entries.Count != 0 && CompareTreeNames(entries[^1], entry) >= 0)
+                throw new InvalidDataException("Git tree object entries are not in canonical Git order.");
+            entries.Add(entry);
+            position = nul + 21;
+        }
+        return entries;
+    }
+
+    private static int CompareTreeNames(RawTreeEntry left, RawTreeEntry right)
+    {
+        var length = Math.Min(left.NameBytes.Length, right.NameBytes.Length);
+        for (var index = 0; index < length; index++)
+        {
+            var difference = left.NameBytes[index] - right.NameBytes[index];
+            if (difference != 0) return difference;
+        }
+        var leftNext = left.NameBytes.Length == length
+            ? left.Mode == "40000" ? (byte)'/' : (byte)0
+            : left.NameBytes[length];
+        var rightNext = right.NameBytes.Length == length
+            ? right.Mode == "40000" ? (byte)'/' : (byte)0
+            : right.NameBytes[length];
+        return leftNext - rightNext;
     }
 
     private static GitTreeEntry RequireBlob(
@@ -613,13 +757,18 @@ public static class PublicationReceiptGate
     }
 
     private static byte[] ReadGitBlob(string root, string objectId)
+        => ReadGitObject(root, "blob", objectId);
+
+    private static byte[] ReadGitObject(string root, string type, string objectId)
     {
-        var bytes = RunBinary("git", new[] { "-C", root, "cat-file", "blob", objectId });
+        if (!System.Text.RegularExpressions.Regex.IsMatch(objectId, "^[0-9a-f]{40}$"))
+            throw new InvalidDataException($"Git {type} object id is noncanonical.");
+        var bytes = RunBinary("git", new[] { "--no-replace-objects", "-C", root, "cat-file", type, objectId });
         if (!string.Equals(
-                ComputeGitObjectId("blob", bytes),
+                ComputeGitObjectId(type, bytes),
                 objectId,
                 StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Git blob object bytes do not match object id {objectId}.");
+            throw new InvalidDataException($"Git {type} object bytes do not match object id {objectId}.");
         return bytes;
     }
 
@@ -631,7 +780,8 @@ public static class PublicationReceiptGate
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
-    private sealed record GitTreeEntry(string Mode, string Type, string ObjectId, string Path);
+    internal sealed record GitTreeEntry(string Mode, string Type, string ObjectId, string Path);
+    internal sealed record RawTreeEntry(string Mode, string Name, string ObjectId, byte[] NameBytes);
 
     private static byte[] QueryHostedReceipt(string repo, string tag, string assetName)
     {
@@ -654,7 +804,7 @@ public static class PublicationReceiptGate
     private static LivePublicationSnapshot QueryLiveSnapshot(string root, string sourceCommit)
     {
         var top = Run("git", new[] { "-C", root, "rev-parse", "--show-toplevel" }).Trim();
-        _ = RunBinary("git", new[] { "-C", top, "cat-file", "-e", $"{sourceCommit}^{{commit}}" });
+        _ = RunBinary("git", new[] { "--no-replace-objects", "-C", top, "cat-file", "-e", $"{sourceCommit}^{{commit}}" });
 
         using var repoDoc = JsonDocument.Parse(Run("gh", new[] { "api", $"repos/{GitHubRepo}" }));
         var defaultBranch = repoDoc.RootElement.GetProperty("default_branch").GetString()

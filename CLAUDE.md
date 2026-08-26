@@ -45,7 +45,8 @@ Publication order is exact and non-bypassable:
 1. Acquire the machine-global claim for the mod/version owner.
 2. Edit source, `itemV2.cfg`, CHANGELOG, and version.
 3. Run `tools\ship\ship.ps1 -Mod <name> -BuildOnly` to generate and validate
-   the tracked bundle without deployment or publication.
+   the inventory-selected tracked or receipt-authority bundle without
+   deployment or publication.
 4. Commit source and bundle together, push, open the pull request, pass hosted
    `qa-gate`, and merge.
 5. From a clean checkout at the exact live default-branch HEAD, run
@@ -58,6 +59,16 @@ VMBLauncher independently downloads that exact receipt, rechecks every fact,
 and verifies the SDK staging file set and hashes immediately before `ugc_tool`.
 `-SkipGitHub`, direct publisher calls, direct launcher publication, and GUI
 publication are not supported paths.
+
+Tracked authority reconstructs each bundle from its exact commit blob. Explicit
+receipt authority reconstructs the committed inventory, scoped ignore state,
+strict schema-3 build receipt, source-blob/build-byte map, normalized output
+map, exact executing builder, and normalization policy. Generated bundle records carry exact
+path/length/SHA-256 and no Git-blob claim; the complete map must match the
+pinned SDK staging bytes. The `receipt-authority-publication-v1` capability
+advertises this boundary. It does not enable receipt-authority deploy, updater,
+recovery, GUI publication, or first-upload bootstrap. Tracked hosted receipts
+retain their exact legacy top-level contract and Git-blob path.
 
 **Test refresh (user ruling 2026-07-13):** the author on PC-A tests the
 hash-verified local deploy and does not need to restart Steam. Volunteer testers
