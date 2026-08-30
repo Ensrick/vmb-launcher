@@ -14,12 +14,12 @@
     <AssemblyName>VMBLauncher</AssemblyName>
     <RootNamespace>VmbLauncher</RootNamespace>
     <ApplicationIcon></ApplicationIcon>
-    <Version>0.6.1</Version>
+    <Version>0.6.2</Version>
     <Company>danjo</Company>
     <Product>VMB Launcher</Product>
     <AssemblyTitle>VMB Launcher</AssemblyTitle>
-    <FileVersion>0.6.1.0</FileVersion>
-    <InformationalVersion>0.6.1</InformationalVersion>
+    <FileVersion>0.6.2.0</FileVersion>
+    <InformationalVersion>0.6.2</InformationalVersion>
     <!-- Custom entry point so headless mode can attach to the parent console
          before WPF would otherwise allocate one. See Program.cs. -->
     <StartupObject>VmbLauncher.Program</StartupObject>
@@ -47,6 +47,18 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <!-- Project references used by the test graph must remain framework-dependent
+       and include internal fixture hooks. Normal build/publish invocations do not
+       set this property, so shipping Debug and Release surfaces exclude them. -->
+  <PropertyGroup Condition="'$(VmbLauncherTestBuild)'=='true'">
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier></RuntimeIdentifier>
+    <OutputPath>bin\TestHooks\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\TestHooks\$(Configuration)\</IntermediateOutputPath>
+    <DefineConstants>$(DefineConstants);VMBLAUNCHER_TEST_HOOKS</DefineConstants>
   </PropertyGroup>
 
 </Project>

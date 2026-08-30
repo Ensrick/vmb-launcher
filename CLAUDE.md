@@ -30,6 +30,27 @@ receipt bytes hosted on the canonical GitHub release by the monorepo's
 `tools\ship\ship.ps1` transaction. Caller-authored JSON is not authority. GUI
 Upload and Build+Deploy+Upload are intentionally non-publishing.
 
+`--deployment-receipt` is a separate internal, canonical-ship-only input. It is
+accepted exactly once, with one nonempty path, only for
+`deploy <mod> --no-remote`. The hosted schema-3 receipt selects the committed
+positive `published_id` and exact output set; the launcher proves and pins the
+matching local `bundleV2` bytes before replacing that one owned local Workshop
+directory. Missing, empty, duplicate, caller-authored, or invalid receipt
+authority fails before any new forward deployment and must never fall through
+to ordinary deploy. Before authenticating that new receipt or opening source
+bytes, deploy restores/finalizes any interrupted exact-set transaction for the
+mod from only its durable journal, recorded physical identities, and byte maps;
+ordinary deploy cannot bypass that recovery, even if the project, mod, or
+source has since disappeared. The bounded two-slot checksummed journal has no
+replace-temp ownership gap. Never infer ownership from a reserved name,
+emptiness, or matching bytes: pre-commit mixed membership must be quarantined
+while the exact prior set is restored, and post-commit mixed membership must be
+preserved while cleanup blocks. Re-authenticating the same short-lived hosted
+receipt may idempotently install only the same exact set.
+Single-consume applies to each in-memory authorization object, not as a durable
+replay ledger. Do not pass this flag from ad hoc scripts, the GUI, or direct
+developer deploys.
+
 Global flags:
 
 - `--no-banner` — suppress the `vmblauncher X.Y.Z (headless)` banner. Use whenever piping output to another tool.
@@ -66,9 +87,13 @@ strict schema-3 build receipt, source-blob/build-byte map, normalized output
 map, exact executing builder, and normalization policy. Generated bundle records carry exact
 path/length/SHA-256 and no Git-blob claim; the complete map must match the
 pinned SDK staging bytes. The `receipt-authority-publication-v1` capability
-advertises this boundary. It does not enable receipt-authority deploy, updater,
-recovery, GUI publication, or first-upload bootstrap. Tracked hosted receipts
-retain their exact legacy top-level contract and Git-blob path.
+advertises the publication boundary. The separate
+`receipt-authority-local-deploy-v1` capability and
+`deployment_receipt_schema=3` advertise canonical ship's LOCAL-only exact-set
+deploy boundary. They do not authorize remote exact-set deployment, updater
+installation, a separate updater/recovery consumer, GUI receipt deployment, or
+first-upload bootstrap. Tracked hosted receipts retain their exact legacy
+top-level contract and Git-blob path.
 
 **Test refresh (user ruling 2026-07-13):** the author on PC-A tests the
 hash-verified local deploy and does not need to restart Steam. Volunteer testers
@@ -248,6 +273,12 @@ Note: per the SDK README, the canonical visibility values are `"private"`, `"fri
 ## Remote deploy targets
 
 `deploy` (and the `deploy` step inside `all`) push the bundle to every enabled remote machine in `settings.json` immediately after the local Workshop-folder copy completes. This is the default — opt out per-invocation with `--no-remote`. The standing rule (`feedback_deploy_both_machines.md`) is that iterative VT2 debugging must keep the test client in lockstep with the host; the launcher enforces it so individual workflows can't forget.
+
+This default describes ordinary iterative deployment. Receipt-authority
+exact-set deploy is a canonical-ship-only LOCAL lane and therefore requires
+both `--deployment-receipt <path>` and `--no-remote`. It must never enter the
+legacy remote-push path. Remote exact-set deployment remains a later,
+separately reviewed capability.
 
 Config schema (`%APPDATA%\VMBLauncher\settings.json`):
 

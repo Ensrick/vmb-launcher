@@ -46,6 +46,22 @@ public partial class MainWindow : Window
             "gui-settings-initialize", mod: null, projectRoot: null, Append))
         {
             _settings = Settings.LoadForMutation();
+            var recovery = ReceiptDeployStartupRecovery.RunBeforeDiscovery(
+                _settings,
+                requestedMod: null,
+                Append);
+            if (!recovery.Ok)
+            {
+                Append($"[startup-recovery] REFUSED: {recovery.Message}");
+                SetStatus("Receipt-deploy recovery failed");
+                MessageBox.Show(
+                    this,
+                    recovery.Message,
+                    "Receipt-deploy recovery failed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                return;
+            }
             var changed = _settings.AutoFillMissing();
             MachineTransactionLease.RefineOwnedProjectRoot(_settings.ProjectRoot);
             using var exactScope = MachineTransactionLease.Enter(
@@ -229,8 +245,49 @@ public partial class MainWindow : Window
 
     private async void BtnDeploy_Click(object sender, RoutedEventArgs e)
     {
+        if (!RecoverDeployBeforeDiscovery()) return;
         if (!Preflight("Deploy", "VMB", "Project folder", "Workshop content folder")) return;
         await RunActionAsync((r, m, ct) => r.DeployAsync(m, ct), "Deploy");
+    }
+
+    private bool RecoverDeployBeforeDiscovery()
+    {
+        if (_current == null) return false;
+        try
+        {
+            var selectedName = _current.Info.Name;
+            using var transaction = MachineTransactionLease.Enter(
+                "gui-deploy-recovery",
+                selectedName,
+                projectRoot: null,
+                Append);
+            var recovery = ReceiptDeployStartupRecovery.RunBeforeDiscovery(
+                _settings,
+                selectedName,
+                Append);
+            if (recovery.Ok) return true;
+            Append($"[deploy] RECOVERY REFUSED: {recovery.Message}");
+            SetStatus("Deploy recovery failed");
+            MessageBox.Show(
+                this,
+                recovery.Message,
+                "Deploy recovery failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Append($"[deploy] RECOVERY EXCEPTION: {ex.Message}");
+            SetStatus("Deploy recovery failed");
+            MessageBox.Show(
+                this,
+                ex.Message,
+                "Deploy recovery failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return false;
+        }
     }
 
     private async void BtnUpload_Click(object sender, RoutedEventArgs e)

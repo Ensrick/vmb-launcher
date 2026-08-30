@@ -296,6 +296,9 @@ public static partial class PublicationReceiptGate
             ?? throw new InvalidDataException("Source-commit mod inventory root is not a hashtable.");
         if (!root.TryGetValue("Mods", out var modsValue) || modsValue is not List<object?> mods)
             throw new InvalidDataException("Source-commit mod inventory lacks a Mods array.");
+        if (mods.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"Source-commit mod inventory exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
         var matches = mods.OfType<Dictionary<string, object?>>()
             .Where(row => DataString(row, "Dir") == modName)
             .ToList();
@@ -315,6 +318,9 @@ public static partial class PublicationReceiptGate
         {
             if (exclusionsValue is not List<object?> rows)
                 throw new InvalidDataException("BuildArtifactExclusions is not an array.");
+            if (rows.Count > MaximumSemanticMapEntries)
+                throw new InvalidDataException(
+                    $"BuildArtifactExclusions exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
             foreach (var row in rows)
             {
                 if (row is not Dictionary<string, object?> exclusion)
@@ -368,6 +374,13 @@ public static partial class PublicationReceiptGate
             throw new InvalidDataException("Committed build receipt schema/mod/source identity is invalid.");
         if (receipt.SourceFiles == null || receipt.SourceFiles.Count == 0)
             throw new InvalidDataException("Committed build receipt source_files map is empty.");
+        if (receipt.SourceFiles.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"Committed build receipt source_files exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
+        ValidateDeclaredByteMapBounds(
+            receipt.OutputFiles,
+            file => file.Length,
+            "Committed build receipt output_files map");
 
         var prefix = $"{modName}/";
         var sourceEntries = entries.Values
@@ -376,12 +389,17 @@ public static partial class PublicationReceiptGate
             .OrderBy(entry => entry.Path[prefix.Length..], StringComparer.Ordinal)
             .ToList();
         foreach (var entry in sourceEntries) RequireRegularBlob(entry, entry.Path);
+        if (sourceEntries.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"Committed source inventory exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
         if (sourceEntries.Count != receipt.SourceFiles.Count)
             throw new InvalidDataException("Committed build receipt source file set differs from the source commit.");
 
+        var sourceBlobSizes = PreflightGitBlobMap(
+            NormalizeRoot(repositoryRoot), sourceEntries, "Committed source inventory");
         var fingerprint = new StringBuilder();
         var materialized = ReconstructCheckoutHashes(
-            repositoryRoot, modName, entries, sourceEntries);
+            repositoryRoot, modName, entries, sourceEntries, sourceBlobSizes);
         for (var i = 0; i < sourceEntries.Count; i++)
         {
             var entry = sourceEntries[i];
@@ -510,7 +528,14 @@ public static partial class PublicationReceiptGate
         var array = parent.GetProperty(property);
         if (array.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException($"{label} is not an array.");
-        foreach (var element in array.EnumerateArray()) validate(element);
+        var count = 0;
+        foreach (var element in array.EnumerateArray())
+        {
+            if (++count > MaximumSemanticMapEntries)
+                throw new InvalidDataException(
+                    $"{label} exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
+            validate(element);
+        }
     }
 
     private static void RequireExactJsonProperties(
@@ -535,6 +560,9 @@ public static partial class PublicationReceiptGate
         if (policy.Algorithm != NormalizationAlgorithm || policy.ExcludedOutputs == null)
             throw new InvalidDataException("Committed build receipt normalization policy is invalid.");
         var actual = policy.ExcludedOutputs;
+        if (actual.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"Build receipt normalization policy exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
         if (actual.Count != expected.Count)
             throw new InvalidDataException("Build receipt normalization policy differs from source inventory.");
         for (var i = 0; i < actual.Count; i++)
@@ -559,6 +587,8 @@ public static partial class PublicationReceiptGate
         string rootBundle,
         string descriptorSha256)
     {
+        ValidateDeclaredByteMapBounds(
+            files, file => file.Length, "Complete bundle output map");
         if (files.Count == 0 || !IsCanonicalRootBundle(rootBundle) || !IsLowerSha256(descriptorSha256))
             throw new InvalidDataException("Complete bundle output map is empty or lacks canonical roots.");
         var exact = new HashSet<string>(StringComparer.Ordinal);
@@ -594,7 +624,8 @@ public static partial class PublicationReceiptGate
         string repositoryRoot,
         string modName,
         IReadOnlyDictionary<string, GitTreeEntry> entries,
-        IReadOnlyList<GitTreeEntry> sourceEntries)
+        IReadOnlyList<GitTreeEntry> sourceEntries,
+        IReadOnlyDictionary<string, long> sourceBlobSizes)
     {
         var foldedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in sourceEntries)
@@ -626,7 +657,13 @@ public static partial class PublicationReceiptGate
                 ? ""
                 : attributeEntry.Path[..attributeEntry.Path.LastIndexOf('/')];
             rules.AddRange(ParseCheckoutAttributeRules(
-                StrictUtf8(ReadGitBlob(NormalizeRoot(repositoryRoot), attributeEntry.ObjectId),
+                StrictUtf8(
+                    sourceBlobSizes.TryGetValue(attributeEntry.Path, out var attributeLength)
+                        ? ReadGitBlob(
+                            NormalizeRoot(repositoryRoot),
+                            attributeEntry.ObjectId,
+                            attributeLength)
+                        : ReadGitBlob(NormalizeRoot(repositoryRoot), attributeEntry.ObjectId),
                     $"Committed {attributeEntry.Path}"),
                 directory,
                 attributeEntry.Path));
@@ -635,7 +672,11 @@ public static partial class PublicationReceiptGate
         var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var entry in sourceEntries)
         {
-            var blob = ReadGitBlob(NormalizeRoot(repositoryRoot), entry.ObjectId);
+            if (!sourceBlobSizes.TryGetValue(entry.Path, out var expectedLength))
+                throw new InvalidDataException(
+                    $"Committed source inventory lacks its preflighted byte length: {entry.Path}");
+            var blob = ReadGitBlob(
+                NormalizeRoot(repositoryRoot), entry.ObjectId, expectedLength);
             var policy = ResolveCheckoutPolicy(entry.Path, rules);
             var bytes = ApplyCheckoutPolicy(entry.Path, blob, policy);
             hashes.Add(
@@ -724,7 +765,12 @@ public static partial class PublicationReceiptGate
                 $"Committed text blob is not canonical LF-only content: {repoPath}");
         if (policy.Eol == "lf") return blob;
 
-        using var converted = new MemoryStream(blob.Length + blob.Count(value => value == (byte)'\n'));
+        var convertedLength = checked(
+            (long)blob.Length + blob.LongCount(value => value == (byte)'\n'));
+        if (convertedLength > MaximumGitObjectBytes)
+            throw new InvalidDataException(
+                $"Materialized committed source blob exceeds the 512-MiB byte safety limit: {repoPath}");
+        using var converted = new MemoryStream(checked((int)convertedLength));
         foreach (var value in blob)
         {
             if (value == (byte)'\n') converted.WriteByte((byte)'\r');

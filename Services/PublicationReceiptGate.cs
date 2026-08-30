@@ -182,6 +182,21 @@ public static partial class PublicationReceiptGate
     public const string QaCheckName = "qa-gate";
     public static readonly TimeSpan MaximumLifetime = TimeSpan.FromMinutes(5);
 
+    // Authority inputs are deliberately much smaller than the semantic byte
+    // set they may describe. These caps are checked before allocating a full
+    // caller/process/Git payload and before hashing it.
+    internal const int MaximumReceiptBytes = 8 * 1024 * 1024;
+    internal const int MaximumProcessOutputBytes = 8 * 1024 * 1024;
+    internal const int MaximumProcessErrorBytes = 1 * 1024 * 1024;
+    internal const int MaximumGitObjectBytes = 512 * 1024 * 1024;
+    internal const int MaximumGitTreeLogicalEntries = 200_000;
+
+    // Receipt/source/output inventories describe the exact deployable set.
+    // Bound their cardinality and declared/commit-qualified aggregate before
+    // constructing any source/output fingerprint.
+    internal const int MaximumSemanticMapEntries = 4096;
+    internal const long MaximumSemanticMapBytes = 32L * 1024 * 1024 * 1024;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = false,
@@ -196,97 +211,33 @@ public static partial class PublicationReceiptGate
         string ugcToolPath,
         DateTime nowUtc)
     {
-        if (string.IsNullOrWhiteSpace(receiptPath))
-            return new(false, "Workshop publication requires --publication-receipt from tools/ship/ship.ps1; a claim alone is not authorization.");
-        if (!File.Exists(receiptPath))
-            return new(false, $"Publication receipt does not exist: {receiptPath}");
-        if (string.IsNullOrWhiteSpace(configuredProjectRoot))
-            return new(false, "Configured project root is missing.");
+        var qualified = AuthorizeCommitQualifiedReceipt(
+            receiptPath,
+            mod,
+            configuredProjectRoot,
+            nowUtc,
+            CommitQualifiedReceiptPurpose.Publication);
+        if (!qualified.Ok || qualified.Proof == null)
+            return new(false, qualified.Message);
 
-        byte[] callerBytes;
-        PublicationReceipt receipt;
         UploadPathLease? lease = null;
         try
         {
-            callerBytes = File.ReadAllBytes(receiptPath);
-            receipt = DeserializeReceipt(callerBytes);
-        }
-        catch (Exception ex)
-        {
-            return new(false, $"Publication receipt is unreadable: {ex.Message}");
-        }
-        if (receipt.Repository != GitHubRepo)
-            return new(false, "Publication receipt repository is not canonical.");
-        if (string.IsNullOrWhiteSpace(receipt.ReleaseTag) ||
-            !System.Text.RegularExpressions.Regex.IsMatch(
-                receipt.ReceiptAssetName,
-                "^publication-receipt-[a-z0-9_-]+\\.json$"))
-            return new(false, "Publication receipt release coordinates are invalid.");
-
-        try
-        {
-            var configuredProject = VmbProject.Resolve(configuredProjectRoot)
-                ?? throw new InvalidDataException("Configured project root cannot be resolved.");
-            var modParent = Directory.GetParent(Path.GetFullPath(mod.ModDir))?.FullName
-                ?? throw new InvalidDataException("Mod directory has no parent.");
-            if (!string.Equals(
-                    NormalizeRoot(configuredProject.ModsDir),
-                    NormalizeRoot(modParent),
-                    StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Mod directory is outside the configured project.");
-
-            var hostedBytes = QueryHostedReceipt(
-                receipt.Repository, receipt.ReleaseTag, receipt.ReceiptAssetName);
-            receipt = AuthenticateHostedReceipt(callerBytes, hostedBytes);
-
-            // Read the immutable Git object database, never the mutable index or
-            // working tree. The receipt's source_commit selects the tree and
-            // every proof below is reconstructed from that tree's exact blobs.
-            var repositoryRoot = Run(
-                "git", new[] { "-C", mod.ModDir, "rev-parse", "--show-toplevel" }).Trim();
-            var committed = string.IsNullOrEmpty(receipt.BundleAuthority)
-                ? ReadCommitSnapshot(repositoryRoot, receipt.SourceCommit, receipt.Mod)
-                : ReadAuthorizedCommitSnapshot(
-                    repositoryRoot, receipt.SourceCommit, receipt.Mod, receipt.BundleAuthority);
-            if (string.IsNullOrWhiteSpace(committed.PublishedId))
-                throw new InvalidDataException(
-                    "Exact source-commit itemV2.cfg has no published_id field.");
-
+            var receipt = qualified.Proof.Receipt;
+            var committed = qualified.Proof.Committed;
             lease = UploadPathLease.Capture(staged, ugcToolPath);
             var expectedStagedCfgText =
                 UploadStager.BuildStagedCfgTextFromSourceCfg(
                     committed.ItemCfgText, receipt.Mod, committed.PreviewFile.Path);
             var expectedStagedCfgBytes = Encoding.UTF8.GetBytes(expectedStagedCfgText);
             var expectedStagedCfgHash = HashBytes(expectedStagedCfgBytes);
-
-            // Query GitHub authority for the receipt-selected immutable commit.
-            // Local HEAD and worktree cleanliness are intentionally irrelevant:
-            // neither is an input to the authorized byte snapshot.
-            var live = QueryLiveSnapshot(mod.ModDir, receipt.SourceCommit);
-            var owner = ShipOwnerId.Resolve(live.SourceRoot);
-            var claim = ShipClaimGate.Evaluate(
-                ShipClaimGate.DefaultClaimsDir(), mod.Name, committed.Version, nowUtc, owner);
-
-            var evaluated = EvaluateSnapshot(
-                receipt,
-                live,
-                mod.Name,
-                committed.Version,
-                owner,
-                nowUtc,
-                HashBytes(callerBytes),
-                HashBytes(hostedBytes),
-                committed.ItemCfgSha256,
-                committed.ItemCfgGitBlob,
-                committed.PublishedId,
+            var evaluated = EvaluatePinnedUploadSnapshot(
                 committed.BundleFiles,
                 committed.PreviewFile,
                 expectedStagedCfgHash,
                 lease.CfgSha256,
                 lease.BundleFiles,
-                lease.PreviewFile,
-                claim,
-                committed.BundleAuthorityProof);
+                lease.PreviewFile);
             if (!evaluated.Ok)
             {
                 lease.Dispose();
@@ -303,7 +254,7 @@ public static partial class PublicationReceiptGate
                     staged: staged,
                     expectedStagedCfgText: expectedStagedCfgText,
                     expectedSourceCfgSha256: committed.ItemCfgSha256,
-                    expectedSourceRoot: repositoryRoot,
+                    expectedSourceRoot: qualified.Proof.RepositoryRoot,
                     expectedSourceCommit: receipt.SourceCommit)
             };
             lease = null;
@@ -337,17 +288,99 @@ public static partial class PublicationReceiptGate
         ShipClaimGate.Evaluation claim,
         PublicationBundleAuthorityProof? sourceBundleAuthorityProof = null)
     {
+        var commitQualified = EvaluateCommitQualifiedSnapshot(
+            receipt,
+            live,
+            modName,
+            sourceVersion,
+            expectedOwner,
+            nowUtc,
+            callerReceiptHash,
+            hostedReceiptHash,
+            sourceCfgHash,
+            sourceCfgGitBlob,
+            sourcePublishedId,
+            sourceBundles,
+            sourcePreview,
+            sourcePublishedId == "0" ? "workshop_bootstrap" : "workshop_upload",
+            claim,
+            sourceBundleAuthorityProof);
+        if (!commitQualified.Ok) return commitQualified;
+
+        var pinnedUpload = EvaluatePinnedUploadSnapshot(
+            sourceBundles,
+            sourcePreview,
+            expectedStagedCfgHash,
+            actualStagedCfgHash,
+            stagedBundles,
+            stagedPreview);
+        if (!pinnedUpload.Ok) return pinnedUpload;
+
+        var mode = sourcePublishedId == "0"
+            ? "first-upload bootstrap"
+            : "existing-item upload";
+        var bundleProof = string.IsNullOrEmpty(receipt.BundleAuthority) || receipt.BundleAuthority == "tracked"
+            ? "source-commit bundle blobs"
+            : "committed schema-3 build receipt";
+        return new(
+            true,
+            $"GitHub-hosted receipt, live authorization, {bundleProof}, and pinned SDK staging bytes passed ({mode})");
+    }
+
+    internal static PublicationGateResult EvaluatePinnedUploadSnapshot(
+        IReadOnlyList<PublicationBundleFile> sourceBundles,
+        PublicationPreviewFile sourcePreview,
+        string expectedStagedCfgHash,
+        string actualStagedCfgHash,
+        IReadOnlyList<PublicationBundleFile> stagedBundles,
+        PublicationPreviewFile stagedPreview)
+    {
+        if (!SameHash(expectedStagedCfgHash, actualStagedCfgHash))
+            return new(false, "SDK-staged item.cfg is not the byte-exact canonical cfg derived from verified source.");
+        var stagedResult = CompareBundleFiles(sourceBundles, stagedBundles, "SDK-staged content");
+        if (!stagedResult.Ok) return stagedResult;
+        var stagedPreviewResult = ComparePreviewFile(sourcePreview, stagedPreview, "SDK-staged");
+        if (!stagedPreviewResult.Ok) return stagedPreviewResult;
+        return new(true, "Pinned SDK staging matches the commit-qualified source snapshot.");
+    }
+
+    /// <summary>
+    /// Consumer-neutral half of the hosted receipt boundary. It proves that
+    /// one exact output map belongs to the authenticated live source commit,
+    /// claim owner, inventory authority, and committed build receipt. Consumers
+    /// must still pin and validate their own byte source and destination before
+    /// they may mutate anything.
+    /// </summary>
+    internal static PublicationGateResult EvaluateCommitQualifiedSnapshot(
+        PublicationReceipt receipt,
+        LivePublicationSnapshot live,
+        string modName,
+        string sourceVersion,
+        string expectedOwner,
+        DateTime nowUtc,
+        string callerReceiptHash,
+        string hostedReceiptHash,
+        string sourceCfgHash,
+        string sourceCfgGitBlob,
+        string sourcePublishedId,
+        IReadOnlyList<PublicationBundleFile> sourceBundles,
+        PublicationPreviewFile sourcePreview,
+        string expectedPurpose,
+        ShipClaimGate.Evaluation claim,
+        PublicationBundleAuthorityProof? sourceBundleAuthorityProof = null)
+    {
         if (!SameHash(callerReceiptHash, hostedReceiptHash))
             return new(false, "Caller receipt bytes do not match the independently downloaded GitHub release asset.");
-        var bootstrap = sourcePublishedId == "0";
-        var expectedPurpose = bootstrap ? "workshop_bootstrap" : "workshop_upload";
         if (receipt.Schema != Schema || receipt.Purpose != expectedPurpose)
             return new(false, "Receipt schema or purpose is not canonical.");
+        var expectedAssetName = expectedPurpose == "local_deploy"
+            ? $"deployment-receipt-{modName}.json"
+            : expectedPurpose is "workshop_upload" or "workshop_bootstrap"
+                ? $"publication-receipt-{modName}.json"
+                : "";
         if (receipt.Repository != GitHubRepo ||
             string.IsNullOrWhiteSpace(receipt.ReleaseTag) ||
-            !System.Text.RegularExpressions.Regex.IsMatch(
-                receipt.ReceiptAssetName,
-                "^publication-receipt-[a-z0-9_-]+\\.json$"))
+            !string.Equals(receipt.ReceiptAssetName, expectedAssetName, StringComparison.Ordinal))
             return new(false, "Receipt is not bound to canonical GitHub release coordinates.");
         if (!Guid.TryParseExact(receipt.Nonce, "N", out _))
             return new(false, "Receipt nonce is invalid.");
@@ -402,7 +435,7 @@ public static partial class PublicationReceiptGate
             return new(false, $"Receipt bundle authority '{authority}' is not supported.");
         if (authority == "receipt" && !IsCanonicalPositivePublishedId(sourcePublishedId))
             return new(false,
-                "Receipt-authority publication requires a canonical positive published_id and does not support first-upload bootstrap.");
+                "Receipt-authority hosted action requires a canonical positive published_id and does not support first-upload bootstrap.");
 
         if (!string.IsNullOrEmpty(receipt.BundleAuthority))
         {
@@ -427,22 +460,12 @@ public static partial class PublicationReceiptGate
         if (!sourceResult.Ok) return sourceResult;
         var sourcePreviewResult = ComparePreviewFile(receipt.PreviewFile, sourcePreview, "source commit", requireGitBlob: true);
         if (!sourcePreviewResult.Ok) return sourcePreviewResult;
-        if (!SameHash(expectedStagedCfgHash, actualStagedCfgHash))
-            return new(false, "SDK-staged item.cfg is not the byte-exact canonical cfg derived from verified source.");
-        var stagedResult = CompareBundleFiles(sourceBundles, stagedBundles, "SDK-staged content");
-        if (!stagedResult.Ok) return stagedResult;
-        var stagedPreviewResult = ComparePreviewFile(sourcePreview, stagedPreview, "SDK-staged");
-        if (!stagedPreviewResult.Ok) return stagedPreviewResult;
-
-        var mode = bootstrap
-            ? "first-upload bootstrap"
-            : "existing-item upload";
         var bundleProof = authority == "tracked"
             ? "source-commit bundle blobs"
             : "committed schema-3 build receipt";
         return new(
             true,
-            $"GitHub-hosted receipt, live authorization, {bundleProof}, and pinned SDK staging bytes passed ({mode})");
+            $"GitHub-hosted receipt, live authorization, and {bundleProof} passed");
     }
 
     private static PublicationGateResult ComparePreviewFile(
@@ -471,6 +494,17 @@ public static partial class PublicationReceiptGate
         string context,
         bool requireGitBlob = false)
     {
+        try
+        {
+            ValidateDeclaredByteMapBounds(
+                expected, file => file.Length, $"{context} expected output map");
+            ValidateDeclaredByteMapBounds(
+                actual, file => file.Length, $"{context} actual output map");
+        }
+        catch (InvalidDataException ex)
+        {
+            return new(false, ex.Message);
+        }
         if (expected.Count == 0) return new(false, "Receipt contains no bundle hashes.");
         if (expected.Select(x => x.Path).Distinct(StringComparer.Ordinal).Count() != expected.Count ||
             actual.Select(x => x.Path).Distinct(StringComparer.Ordinal).Count() != actual.Count)
@@ -492,14 +526,19 @@ public static partial class PublicationReceiptGate
 
     private static PublicationReceipt DeserializeReceipt(byte[] bytes)
     {
+        RequireReceiptByteLimit(bytes.LongLength, "Receipt JSON");
         var receipt = JsonSerializer.Deserialize<PublicationReceipt>(bytes, JsonOptions)
             ?? throw new InvalidDataException("receipt JSON was empty");
+        ValidateDeclaredByteMapBounds(
+            receipt.BundleFiles, file => file.Length, "Hosted receipt output map");
         ValidatePublicationBundleAuthorityJsonShape(bytes, receipt);
         return receipt;
     }
 
     internal static PublicationReceipt AuthenticateHostedReceipt(byte[] callerBytes, byte[] hostedBytes)
     {
+        RequireReceiptByteLimit(callerBytes.LongLength, "Caller receipt");
+        RequireReceiptByteLimit(hostedBytes.LongLength, "Hosted receipt");
         if (!callerBytes.AsSpan().SequenceEqual(hostedBytes))
             throw new InvalidDataException(
                 "Caller receipt bytes do not match the independently downloaded GitHub release asset.");
@@ -549,13 +588,16 @@ public static partial class PublicationReceiptGate
         var cfgText = Encoding.UTF8.GetString(cfgBytes);
 
         var bundlePrefix = $"{modName}/bundleV2/";
-        var bundles = entries.Values
+        var bundleEntries = entries.Values
             .Where(entry => entry.Path.StartsWith(bundlePrefix, StringComparison.Ordinal))
             .OrderBy(entry => entry.Path, StringComparer.Ordinal)
+            .ToList();
+        var bundleSizes = PreflightGitBlobMap(
+            root, bundleEntries, "Source-commit bundle output map");
+        var bundles = bundleEntries
             .Select(entry =>
             {
-                RequireRegularBlob(entry, entry.Path);
-                var bytes = ReadGitBlob(root, entry.ObjectId);
+                var bytes = ReadGitBlob(root, entry.ObjectId, bundleSizes[entry.Path]);
                 return new PublicationBundleFile
                 {
                     Path = entry.Path[bundlePrefix.Length..],
@@ -655,26 +697,41 @@ public static partial class PublicationReceiptGate
             throw new InvalidDataException("Source commit root tree id is noncanonical.");
 
         var result = new Dictionary<string, GitTreeEntry>(StringComparer.Ordinal);
-        ReadVerifiedTreeRecursive(root, treeId, "", result, 0);
+        var budget = new GitTreeTraversalBudget(MaximumGitTreeLogicalEntries);
+        ReadVerifiedTreeRecursive(
+            treeId,
+            "",
+            result,
+            depth: 0,
+            budget,
+            id => ReadGitObject(root, "tree", id));
         return result;
     }
 
     private static void ReadVerifiedTreeRecursive(
-        string root,
         string treeId,
         string prefix,
         Dictionary<string, GitTreeEntry> result,
-        int depth)
+        int depth,
+        GitTreeTraversalBudget budget,
+        Func<string, byte[]> readTree)
     {
-        if (depth > 64 || result.Count > 200_000)
+        if (depth > 64)
             throw new InvalidDataException("Source commit tree exceeds the bounded proof limits.");
-        var bytes = ReadGitObject(root, "tree", treeId);
-        foreach (var entry in ParseTreeObject(bytes))
+        var bytes = readTree(treeId);
+        foreach (var entry in ParseTreeObject(bytes, budget.Remaining))
         {
+            budget.Consume();
             var path = prefix.Length == 0 ? entry.Name : $"{prefix}/{entry.Name}";
             if (entry.Mode == "40000")
             {
-                ReadVerifiedTreeRecursive(root, entry.ObjectId, path, result, depth + 1);
+                ReadVerifiedTreeRecursive(
+                    entry.ObjectId,
+                    path,
+                    result,
+                    depth + 1,
+                    budget,
+                    readTree);
                 continue;
             }
             var type = entry.Mode == "160000" ? "commit" : "blob";
@@ -684,7 +741,14 @@ public static partial class PublicationReceiptGate
     }
 
     internal static IReadOnlyList<RawTreeEntry> ParseTreeObject(byte[] bytes)
+        => ParseTreeObject(bytes, MaximumGitTreeLogicalEntries);
+
+    internal static IReadOnlyList<RawTreeEntry> ParseTreeObject(
+        byte[] bytes,
+        int maximumEntries)
     {
+        if (maximumEntries < 0 || maximumEntries > MaximumGitTreeLogicalEntries)
+            throw new ArgumentOutOfRangeException(nameof(maximumEntries));
         var entries = new List<RawTreeEntry>();
         var names = new HashSet<string>(StringComparer.Ordinal);
         var foldedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -692,6 +756,9 @@ public static partial class PublicationReceiptGate
         var position = 0;
         while (position < bytes.Length)
         {
+            if (entries.Count >= maximumEntries)
+                throw new InvalidDataException(
+                    "Git tree object exceeds the remaining logical-entry traversal budget.");
             var space = Array.IndexOf(bytes, (byte)' ', position);
             var nul = space < 0 ? -1 : Array.IndexOf(bytes, (byte)0, space + 1);
             if (space <= position || nul <= space + 1 || nul + 21 > bytes.Length)
@@ -719,6 +786,45 @@ public static partial class PublicationReceiptGate
             position = nul + 21;
         }
         return entries;
+    }
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static IReadOnlyDictionary<string, GitTreeEntry> ReadVerifiedTreeForTest(
+        string rootTreeId,
+        Func<string, byte[]> readTree,
+        int maximumLogicalEntries)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(rootTreeId, "^[0-9a-f]{40}$"))
+            throw new InvalidDataException("Test root tree id is noncanonical.");
+        var result = new Dictionary<string, GitTreeEntry>(StringComparer.Ordinal);
+        ReadVerifiedTreeRecursive(
+            rootTreeId,
+            "",
+            result,
+            depth: 0,
+            new GitTreeTraversalBudget(maximumLogicalEntries),
+            readTree);
+        return result;
+    }
+#endif
+    private sealed class GitTreeTraversalBudget
+    {
+        private int _remaining;
+        internal int Remaining => _remaining;
+
+        internal GitTreeTraversalBudget(int maximum)
+        {
+            if (maximum < 0 || maximum > MaximumGitTreeLogicalEntries)
+                throw new ArgumentOutOfRangeException(nameof(maximum));
+            _remaining = maximum;
+        }
+
+        internal void Consume()
+        {
+            if (_remaining == 0)
+                throw new InvalidDataException(
+                    "Source commit tree exceeds its logical-entry traversal budget.");
+            _remaining--;
+        }
     }
 
     private static int CompareTreeNames(RawTreeEntry left, RawTreeEntry right)
@@ -756,20 +862,163 @@ public static partial class PublicationReceiptGate
             throw new InvalidDataException($"Source path '{path}' is not a regular Git blob.");
     }
 
+    /// <summary>
+    /// Performs a complete size-only census before any member of a semantic
+    /// Git-blob map is allocated or hashed. Git object IDs are immutable, so
+    /// the returned exact lengths can be used for the subsequent bounded reads.
+    /// </summary>
+    private static IReadOnlyDictionary<string, long> PreflightGitBlobMap(
+        string root,
+        IReadOnlyList<GitTreeEntry> entries,
+        string label)
+    {
+        if (entries.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"{label} exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
+
+        long aggregate = 0;
+        var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+        {
+            RequireRegularBlob(entry, entry.Path);
+            var length = ReadGitObjectSize(root, "blob", entry.ObjectId);
+            try { aggregate = checked(aggregate + length); }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException($"{label} byte length overflowed.", ex);
+            }
+            if (aggregate > MaximumSemanticMapBytes)
+                throw new InvalidDataException(
+                    $"{label} exceeds the 32-GiB aggregate byte limit.");
+            sizes.Add(entry.Path, length);
+        }
+        return sizes;
+    }
+
+    private static long ValidateDeclaredByteMapBounds<T>(
+        IReadOnlyCollection<T>? entries,
+        Func<T, long> lengthSelector,
+        string label)
+    {
+        if (entries == null)
+            throw new InvalidDataException($"{label} is missing.");
+        if (entries.Count > MaximumSemanticMapEntries)
+            throw new InvalidDataException(
+                $"{label} exceeds the {MaximumSemanticMapEntries}-entry safety limit.");
+
+        long aggregate = 0;
+        foreach (var entry in entries)
+        {
+            var length = lengthSelector(entry);
+            if (length < 0)
+                throw new InvalidDataException($"{label} contains a negative byte length.");
+            try { aggregate = checked(aggregate + length); }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException($"{label} byte length overflowed.", ex);
+            }
+            if (aggregate > MaximumSemanticMapBytes)
+                throw new InvalidDataException(
+                    $"{label} exceeds the 32-GiB aggregate byte limit.");
+        }
+        return aggregate;
+    }
+
+    private static void RequireReceiptByteLimit(long length, string label)
+    {
+        if (length < 0 || length > MaximumReceiptBytes)
+            throw new InvalidDataException(
+                $"{label} exceeds the 8-MiB receipt safety limit.");
+    }
+
+    private static void RequireGitObjectByteLimit(long length, string type, string objectId)
+    {
+        if (length < 0 || length > MaximumGitObjectBytes)
+            throw new InvalidDataException(
+                $"Git {type} object {objectId} exceeds the 512-MiB object safety limit.");
+    }
+
+    internal static byte[] ReadBoundedReceiptFile(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.SequentialScan);
+        RequireReceiptByteLimit(stream.Length, "Caller receipt");
+        var bytes = new byte[checked((int)stream.Length)];
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            var read = stream.Read(bytes, offset, bytes.Length - offset);
+            if (read == 0)
+                throw new EndOfStreamException(
+                    "Caller receipt became shorter during its bounded read.");
+            offset += read;
+        }
+        if (stream.ReadByte() != -1)
+            throw new InvalidDataException(
+                "Caller receipt changed or exceeded the 8-MiB safety limit during its bounded read.");
+        return bytes;
+    }
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static void RequireGitObjectByteLimitForTest(long length) =>
+        RequireGitObjectByteLimit(length, "blob", new string('0', 40));
+#endif
     private static byte[] ReadGitBlob(string root, string objectId)
         => ReadGitObject(root, "blob", objectId);
+
+    private static byte[] ReadGitBlob(string root, string objectId, long expectedLength)
+        => ReadGitObject(root, "blob", objectId, expectedLength);
 
     private static byte[] ReadGitObject(string root, string type, string objectId)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(objectId, "^[0-9a-f]{40}$"))
             throw new InvalidDataException($"Git {type} object id is noncanonical.");
-        var bytes = RunBinary("git", new[] { "--no-replace-objects", "-C", root, "cat-file", type, objectId });
+        var length = ReadGitObjectSize(root, type, objectId);
+        return ReadGitObject(root, type, objectId, length);
+    }
+
+    private static byte[] ReadGitObject(
+        string root,
+        string type,
+        string objectId,
+        long expectedLength)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(objectId, "^[0-9a-f]{40}$"))
+            throw new InvalidDataException($"Git {type} object id is noncanonical.");
+        RequireGitObjectByteLimit(expectedLength, type, objectId);
+        var bytes = RunBinaryExact(
+            "git",
+            new[] { "--no-replace-objects", "-C", root, "cat-file", type, objectId },
+            expectedLength,
+            $"Git {type} object {objectId}");
         if (!string.Equals(
                 ComputeGitObjectId(type, bytes),
                 objectId,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"Git {type} object bytes do not match object id {objectId}.");
         return bytes;
+    }
+
+    private static long ReadGitObjectSize(string root, string type, string objectId)
+    {
+        var raw = Run(
+            "git",
+            new[] { "--no-replace-objects", "-C", root, "cat-file", "-s", objectId })
+            .Trim();
+        if (!long.TryParse(
+                raw,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var length) ||
+            raw != length.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            throw new InvalidDataException(
+                $"Git {type} object {objectId} reported a noncanonical byte length.");
+        RequireGitObjectByteLimit(length, type, objectId);
+        return length;
     }
 
     private static string ComputeGitObjectId(string type, byte[] bytes)
@@ -887,10 +1136,107 @@ public static partial class PublicationReceiptGate
     private static string Run(string fileName, IReadOnlyList<string> arguments) =>
         Encoding.UTF8.GetString(RunBinary(fileName, arguments));
 
-    private static byte[] RunBinary(string fileName, IReadOnlyList<string> arguments)
+    private static byte[] RunBinary(string fileName, IReadOnlyList<string> arguments) =>
+        RunBinaryBounded(
+            fileName,
+            arguments,
+            MaximumProcessOutputBytes,
+            $"{fileName} standard output");
+
+    private static byte[] RunBinaryBounded(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        int maximumOutputBytes,
+        string outputLabel)
     {
+        if (maximumOutputBytes < 0 || maximumOutputBytes > MaximumProcessOutputBytes)
+            throw new ArgumentOutOfRangeException(nameof(maximumOutputBytes));
         MachineTransactionLease.RequireCurrent("Publication receipt process creation");
         ProcessTreeGuard.EnsureCurrentProcessContained();
+        var psi = AuthorityProcessStartInfo(fileName, arguments);
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start {fileName}.");
+        var anyLimitExceeded = 0;
+        void StopOversizedProcess()
+        {
+            Interlocked.Exchange(ref anyLimitExceeded, 1);
+            TryKill(process);
+        }
+        var stdoutTask = CaptureBoundedAsync(
+            process.StandardOutput.BaseStream,
+            maximumOutputBytes,
+            StopOversizedProcess,
+            () => Volatile.Read(ref anyLimitExceeded) != 0);
+        var stderrTask = CaptureBoundedAsync(
+            process.StandardError.BaseStream,
+            MaximumProcessErrorBytes,
+            StopOversizedProcess,
+            () => Volatile.Read(ref anyLimitExceeded) != 0);
+        process.WaitForExit();
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        var stderr = stderrTask.GetAwaiter().GetResult();
+        if (stdout.Exceeded)
+            throw new InvalidDataException(
+                $"{outputLabel} exceeds its {FormatMiB(maximumOutputBytes)} bounded capture limit.");
+        if (stderr.Exceeded)
+            throw new InvalidDataException(
+                $"{fileName} standard error exceeds its 1-MiB bounded capture limit.");
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"{fileName} exited {process.ExitCode}: {Encoding.UTF8.GetString(stderr.Bytes).Trim()}");
+        return stdout.Bytes;
+    }
+
+    private static byte[] RunBinaryExact(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        long expectedOutputBytes,
+        string outputLabel)
+    {
+        if (expectedOutputBytes < 0 || expectedOutputBytes > MaximumGitObjectBytes)
+            throw new ArgumentOutOfRangeException(nameof(expectedOutputBytes));
+        MachineTransactionLease.RequireCurrent("Publication receipt process creation");
+        ProcessTreeGuard.EnsureCurrentProcessContained();
+        var exactBuffer = new byte[checked((int)expectedOutputBytes)];
+        var psi = AuthorityProcessStartInfo(fileName, arguments);
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start {fileName}.");
+        var anyLimitExceeded = 0;
+        void StopOversizedProcess()
+        {
+            Interlocked.Exchange(ref anyLimitExceeded, 1);
+            TryKill(process);
+        }
+        var stdoutTask = CaptureExactAsync(
+            process.StandardOutput.BaseStream,
+            exactBuffer,
+            StopOversizedProcess,
+            () => Volatile.Read(ref anyLimitExceeded) != 0);
+        var stderrTask = CaptureBoundedAsync(
+            process.StandardError.BaseStream,
+            MaximumProcessErrorBytes,
+            StopOversizedProcess,
+            () => Volatile.Read(ref anyLimitExceeded) != 0);
+        process.WaitForExit();
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        var stderr = stderrTask.GetAwaiter().GetResult();
+        if (stdout.Exceeded)
+            throw new InvalidDataException(
+                $"{outputLabel} emitted more than its preflighted {expectedOutputBytes} bytes.");
+        if (stderr.Exceeded)
+            throw new InvalidDataException(
+                $"{fileName} standard error exceeds its 1-MiB bounded capture limit.");
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"{fileName} exited {process.ExitCode}: {Encoding.UTF8.GetString(stderr.Bytes).Trim()}");
+        if (stdout.Length != exactBuffer.Length)
+            throw new InvalidDataException(
+                $"{outputLabel} emitted {stdout.Length} bytes after preflighting {exactBuffer.Length} bytes.");
+        return exactBuffer;
+    }
+
+    private static ProcessStartInfo AuthorityProcessStartInfo(
+        string fileName,
+        IReadOnlyList<string> arguments)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
@@ -901,16 +1247,96 @@ public static partial class PublicationReceiptGate
             WindowStyle = ProcessWindowStyle.Hidden,
         };
         foreach (var argument in arguments) psi.ArgumentList.Add(argument);
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start {fileName}.");
-        using var output = new MemoryStream();
-        var stdoutTask = process.StandardOutput.BaseStream.CopyToAsync(output);
-        var stderrTask = process.StandardError.ReadToEndAsync();
-        process.WaitForExit();
-        Task.WaitAll(stdoutTask, stderrTask);
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"{fileName} exited {process.ExitCode}: {stderrTask.Result.Trim()}");
-        return output.ToArray();
+        return psi;
     }
+
+    private static async Task<BoundedCapture> CaptureBoundedAsync(
+        Stream source,
+        int maximumBytes,
+        Action onExceeded,
+        Func<bool> anyLimitExceeded)
+    {
+        using var captured = new MemoryStream(Math.Min(maximumBytes, 64 * 1024));
+        var buffer = new byte[64 * 1024];
+        var exceeded = false;
+        try
+        {
+            while (true)
+            {
+                var read = await source.ReadAsync(buffer).ConfigureAwait(false);
+                if (read == 0) break;
+                if (exceeded) continue;
+                if (read > maximumBytes - captured.Length)
+                {
+                    exceeded = true;
+                    onExceeded();
+                    continue;
+                }
+                captured.Write(buffer, 0, read);
+            }
+        }
+        catch (IOException) when (anyLimitExceeded())
+        {
+            // The process was killed after one of its pipes crossed a cap.
+        }
+        return new BoundedCapture(captured.ToArray(), exceeded);
+    }
+
+    private static async Task<ExactCapture> CaptureExactAsync(
+        Stream source,
+        byte[] destination,
+        Action onExceeded,
+        Func<bool> anyLimitExceeded)
+    {
+        var offset = 0;
+        var exceeded = false;
+        var overflowBuffer = new byte[64 * 1024];
+        try
+        {
+            while (offset < destination.Length)
+            {
+                var count = Math.Min(64 * 1024, destination.Length - offset);
+                var read = await source.ReadAsync(destination.AsMemory(offset, count)).ConfigureAwait(false);
+                if (read == 0) return new ExactCapture(offset, exceeded);
+                offset += read;
+            }
+            var extra = await source.ReadAsync(overflowBuffer).ConfigureAwait(false);
+            if (extra != 0)
+            {
+                exceeded = true;
+                onExceeded();
+                while (await source.ReadAsync(overflowBuffer).ConfigureAwait(false) != 0) { }
+            }
+        }
+        catch (IOException) when (anyLimitExceeded())
+        {
+            // The process was killed after one of its pipes crossed a cap.
+        }
+        return new ExactCapture(offset, exceeded);
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch { }
+    }
+
+    private static string FormatMiB(int bytes) =>
+        bytes % (1024 * 1024) == 0
+            ? $"{bytes / (1024 * 1024)}-MiB"
+            : $"{bytes}-byte";
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static byte[] RunBoundedProcessForTest(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        int maximumOutputBytes) =>
+        RunBinaryBounded(fileName, arguments, maximumOutputBytes, $"{fileName} standard output");
+#endif
+    private sealed record BoundedCapture(byte[] Bytes, bool Exceeded);
+    private sealed record ExactCapture(int Length, bool Exceeded);
 
     private static string NormalizeRoot(string path) =>
         Path.GetFullPath(path).TrimEnd('\\', '/');

@@ -5,6 +5,31 @@ namespace VmbLauncher.Tests;
 public class TransactionMutationCensusTests
 {
     [Fact]
+    public void ReceiptDeployStateMachineAndFilesystemPrimitivesRemainDecomposed()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var stateMachine = Path.Combine(root, "Services", "LocalExactSetDeployment.cs");
+        var sourceLease = Path.Combine(root, "Services", "ImmutableBundleSourceLease.cs");
+        var fileSystem = Path.Combine(root, "Services", "LocalExactSetFileSystem.cs");
+        var namespaceLeases = Path.Combine(root, "Services", "LocalExactSetNamespace.cs");
+        var journal = Path.Combine(root, "Services", "LocalExactSetJournal.cs");
+        var models = Path.Combine(root, "Services", "LocalExactSetModels.cs");
+
+        Assert.InRange(File.ReadLines(stateMachine).Take(1501).Count(), 1, 1500);
+        Assert.InRange(File.ReadLines(sourceLease).Take(1501).Count(), 1, 1500);
+        Assert.InRange(File.ReadLines(fileSystem).Take(1501).Count(), 1, 1500);
+        Assert.InRange(File.ReadLines(namespaceLeases).Take(1501).Count(), 1, 1500);
+        Assert.InRange(File.ReadLines(journal).Take(1501).Count(), 1, 1500);
+        Assert.InRange(File.ReadLines(models).Take(1501).Count(), 1, 1500);
+        Assert.Contains("partial class LocalExactSetDeployment", File.ReadAllText(stateMachine));
+        Assert.Contains("class ImmutableBundleSourceLease", File.ReadAllText(sourceLease));
+        Assert.Contains("partial class LocalExactSetDeployment", File.ReadAllText(fileSystem));
+        Assert.Contains("partial class LocalExactSetDeployment", File.ReadAllText(namespaceLeases));
+        Assert.Contains("partial class LocalExactSetDeployment", File.ReadAllText(journal));
+        Assert.Contains("partial class LocalExactSetDeployment", File.ReadAllText(models));
+    }
+
+    [Fact]
     public void GuiSettingsAndScaffoldingUseTransactionBoundaries()
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
@@ -19,6 +44,11 @@ public class TransactionMutationCensusTests
         var cli = File.ReadAllText(Path.Combine(root, "Cli", "CliDispatcher.cs"));
         var processRunner = File.ReadAllText(Path.Combine(root, "Services", "ProcessRunner.cs"));
         var receiptGate = File.ReadAllText(Path.Combine(root, "Services", "PublicationReceiptGate.cs"));
+        var receiptDeploy = File.ReadAllText(Path.Combine(root, "Services", "ReceiptAuthorityLocalDeploy.cs"));
+        var receiptRecovery = File.ReadAllText(Path.Combine(root, "Services", "ReceiptDeployStartupRecovery.cs"));
+        var exactDeploy = File.ReadAllText(Path.Combine(root, "Services", "LocalExactSetDeployment.cs"));
+        var sourceLease = File.ReadAllText(Path.Combine(root, "Services", "ImmutableBundleSourceLease.cs"));
+        var exactFileSystem = File.ReadAllText(Path.Combine(root, "Services", "LocalExactSetFileSystem.cs"));
         var uploadStager = File.ReadAllText(Path.Combine(root, "Services", "UploadStager.cs"));
         var uploadLease = File.ReadAllText(Path.Combine(root, "Services", "UploadPathLease.cs"));
         var scaffolder = File.ReadAllText(Path.Combine(root, "Services", "ModScaffolder.cs"));
@@ -50,6 +80,19 @@ public class TransactionMutationCensusTests
         Assert.Contains("RefineOwnedProjectRoot(project.Root)", cli);
         Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(
             modRunner, @"mod\.Name, project\.Root, L\)").Count);
+        var receiptDeployStart = modRunner.IndexOf(
+            "if (deploymentReceiptPath != null)", StringComparison.Ordinal);
+        var interruptedRecoveryStart = modRunner.IndexOf(
+            "LocalExactSetDeployment.RecoverInterruptedSafety", StringComparison.Ordinal);
+        var legacyDeployStart = modRunner.IndexOf(
+            "var id = ResolveWorkshopId(mod);", receiptDeployStart, StringComparison.Ordinal);
+        Assert.True(interruptedRecoveryStart >= 0 &&
+            interruptedRecoveryStart < receiptDeployStart &&
+            legacyDeployStart > receiptDeployStart);
+        Assert.DoesNotContain(
+            "RemoteDeploy",
+            modRunner[receiptDeployStart..legacyDeployStart],
+            StringComparison.Ordinal);
         var joinStart = machineLease.IndexOf("private static LeaseState JoinWrapperLease", StringComparison.Ordinal);
         var watcherStart = machineLease.IndexOf("var watcher =", joinStart, StringComparison.Ordinal);
         var joinProbe = machineLease[joinStart..watcherStart];
@@ -75,6 +118,21 @@ public class TransactionMutationCensusTests
         Assert.True(
             cli.IndexOf("MachineTransactionLease.Enter", StringComparison.Ordinal) <
             cli.IndexOf("var settings = LoadSettings", StringComparison.Ordinal));
+        var cliRecovery = cli.IndexOf(
+            "ReceiptDeployStartupRecovery.RunBeforeDiscovery", StringComparison.Ordinal);
+        var cliAutoFill = cli.IndexOf("var changed = settings.AutoFillMissing()", StringComparison.Ordinal);
+        var cliProjectDiscovery = cli.IndexOf("settings.ResolveMutationProject()", StringComparison.Ordinal);
+        Assert.True(cliRecovery >= 0 && cliRecovery < cliAutoFill && cliAutoFill < cliProjectDiscovery,
+            "CLI deploy recovery must precede auto-fill and project discovery.");
+        Assert.Contains("LocalExactSetDeployment.RecoverAllInterruptedSafety", receiptRecovery);
+        Assert.Contains("LocalExactSetDeployment.RecoverInterruptedSafety", receiptRecovery);
+        var guiDeploy = main.IndexOf("private async void BtnDeploy_Click", StringComparison.Ordinal);
+        var guiRecovery = main.IndexOf("RecoverDeployBeforeDiscovery()", guiDeploy, StringComparison.Ordinal);
+        var guiPreflight = main.IndexOf("Preflight(\"Deploy\"", guiDeploy, StringComparison.Ordinal);
+        var guiRun = main.IndexOf("RunActionAsync", guiDeploy, StringComparison.Ordinal);
+        Assert.True(guiDeploy >= 0 && guiRecovery > guiDeploy &&
+            guiRecovery < guiPreflight && guiPreflight < guiRun,
+            "GUI deploy recovery must precede preflight and action discovery.");
         Assert.Contains("readOnlySettings.AutoFillMissing();", cli);
         Assert.DoesNotContain("readOnlySettings.Save", cli);
         Assert.Contains("MachineTransactionLease.RequireCurrent", settingsModel);
@@ -92,6 +150,10 @@ public class TransactionMutationCensusTests
             "Preflight must adopt the FirstRunWindow settings before refreshing GUI state.");
         Assert.Contains("RequireCurrent(\"ProcessRunner process creation\")", processRunner);
         Assert.Contains("RequireCurrent(\"Publication receipt process creation\")", receiptGate);
+        Assert.Contains("RequireCurrent(\"Commit-qualified hosted receipt proof\")", receiptDeploy);
+        Assert.Contains("RequireCurrent(\"Receipt-authority source-byte lease\")", sourceLease);
+        Assert.Contains("RequireCurrent(\"Receipt-authority local exact-set deploy\")", exactDeploy);
+        Assert.Contains("SetFileInformationByHandle", exactFileSystem);
         Assert.Contains("RequireCurrent(\"Upload staging\")", uploadStager);
         Assert.Contains("RequireCurrent(\"Upload ACL capture\")", uploadLease);
         Assert.Contains("RequireCurrent(\"Upload ACL recovery\")", uploadLease);
@@ -118,7 +180,7 @@ public class TransactionMutationCensusTests
             // is deliberate review friction and requires re-proving ownership.
             // TbLog is generated from XAML, so source-only compilation cannot
             // bind TextBox.AppendText; retain it visibly instead of suppressing it.
-            "MainWindow.xaml.cs:152:9:1:UNRESOLVED mutation candidate",
+            "MainWindow.xaml.cs:168:9:1:UNRESOLVED mutation candidate",
             "Services/MachineTransactionLease.cs:385:9:1:Directory API",
             "Services/MachineTransactionLease.cs:390:33:1:new FileStream",
             "Services/MachineTransactionLease.cs:394:17:1:stream.Write",
@@ -126,10 +188,36 @@ public class TransactionMutationCensusTests
             "Services/MachineTransactionLease.cs:397:13:1:File API",
             "Services/MachineTransactionLease.cs:399:53:1:File API",
             "Services/MachineTransactionLease.cs:413:9:1:File API",
+            // Receipt-authority local deploy owns only an authenticated,
+            // canonical exact-set staging/swap/rollback namespace under the
+            // selected Workshop parent. Each path is transaction-bound and
+            // covered by identity/hash/recovery adversarial tests.
+            "Services/ImmutableBundleSourceLease.cs:102:30:1:new FileStream",
+            "Services/ImmutableBundleSourceLease.cs:158:13:1:stream.Write",
+            "Services/LocalExactSetDeployment.cs:148:40:1:new FileStream",
+            "Services/LocalExactSetDeployment.cs:176:21:1:stream.Flush",
+            "Services/LocalExactSetFileSystem.cs:118:22:1:new FileStream",
+            "Services/LocalExactSetFileSystem.cs:170:14:1:SetFileInformationByHandle",
+            "Services/LocalExactSetFileSystem.cs:223:30:1:NtSetInformationFile",
+            "Services/LocalExactSetFileSystem.cs:234:23:1:SetFileInformationByHandleBuffer",
+            "Services/LocalExactSetJournal.cs:51:22:1:new FileStream",
+            "Services/LocalExactSetJournal.cs:62:13:1:stream.SetLength",
+            "Services/LocalExactSetJournal.cs:63:13:1:stream.Flush",
+            "Services/LocalExactSetJournal.cs:186:9:1:stream.Write",
+            "Services/LocalExactSetJournal.cs:187:9:1:stream.Flush",
+            "Services/LocalExactSetJournal.cs:196:13:1:stream.Write",
+            "Services/LocalExactSetJournal.cs:204:9:1:stream.Flush",
+            "Services/LocalExactSetJournal.cs:212:9:1:stream.Write",
+            "Services/LocalExactSetJournal.cs:214:9:1:stream.Write",
+            "Services/LocalExactSetJournal.cs:215:9:1:stream.Flush",
+            "Services/LocalExactSetJournal.cs:326:20:1:new FileStream",
+            "Services/LocalExactSetNamespace.cs:104:30:1:NtCreateFile",
+            "Services/LocalExactSetNamespace.cs:230:26:1:NtCreateFile",
+            "Services/LocalExactSetNamespace.cs:295:34:1:new FileStream",
             "Services/ModDiscovery.cs:130:9:1:File API",
-            "Services/ModRunner.cs:105:13:1:File API",
-            "Services/ModRunner.cs:103:13:1:File API",
-            "Services/ModRunner.cs:112:13:1:File API",
+            "Services/ModRunner.cs:181:13:1:File API",
+            "Services/ModRunner.cs:183:13:1:File API",
+            "Services/ModRunner.cs:190:13:1:File API",
             "Services/ModScaffolder.cs:38:13:1:Directory API",
             "Services/ModScaffolder.cs:45:49:1:Directory API",
             "Services/ModScaffolder.cs:63:9:1:Directory API",
@@ -145,15 +233,25 @@ public class TransactionMutationCensusTests
             "Services/ProcessTreeGuard.cs:55:22:1:AssignProcessToJobObject",
             "Services/ProcessTreeGuard.cs:126:38:1:Process.instance.Kill",
             "Services/ProcessTreeGuard.cs:180:14:1:CreateProcessW",
-            "Services/ProcessTreeGuard.cs:254:19:1:CreateJobObjectW",
-            "Services/ProcessTreeGuard.cs:260:18:1:AssignProcessToJobObject",
-            "Services/PublicationReceiptGate.cs:904:29:1:Process.Start",
-            "Services/PublicationReceiptGate.cs:906:26:1:stream.CopyTo",
+            "Services/PublicationReceiptGate.cs:943:28:1:new FileStream",
+            "Services/PublicationReceiptGate.cs:1157:29:1:Process.Start",
+            "Services/PublicationReceiptGate.cs:1201:29:1:Process.Start",
+            "Services/PublicationReceiptGate.cs:1275:17:1:stream.Write",
+            "Services/PublicationReceiptGate.cs:1322:37:1:Process.instance.Kill",
             // Receipt authority reconstructs source checkout bytes through the
             // committed blobs and a constrained in-memory EOL transform; it
             // adds no filesystem mutation site.
-            "Services/ReceiptAuthorityCommitProof.cs:730:38:1:stream.Write",
-            "Services/ReceiptAuthorityCommitProof.cs:731:13:1:stream.Write",
+            "Services/ReceiptAuthorityCommitProof.cs:776:38:1:stream.Write",
+            "Services/ReceiptAuthorityCommitProof.cs:777:13:1:stream.Write",
+            // Consumer-neutral output fingerprint construction is memory-only.
+            "Services/ReceiptAuthorityLocalDeploy.cs:71:13:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:72:13:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:73:13:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:74:13:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:77:17:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:78:17:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:79:17:1:stream.Write",
+            "Services/ReceiptAuthorityLocalDeploy.cs:81:13:1:stream.Flush",
             "Services/Settings.cs:95:9:1:Directory API",
             "Services/Settings.cs:104:33:1:new FileStream",
             "Services/Settings.cs:107:33:1:new StreamWriter",
@@ -197,7 +295,7 @@ public class TransactionMutationCensusTests
             "Services/VmbDownloader.cs:134:25:1:File API",
             "Services/VmbDownloader.cs:141:19:1:stream.Write",
         };
-        Assert.Equal(75, expected.Count);
+        Assert.Equal(106, expected.Count);
 
         Assert.True(expected.SetEquals(actual),
             "Production filesystem/process/job/ACL census drifted.\n" +
@@ -305,6 +403,64 @@ public class TransactionMutationCensusTests
         Assert.Equal(2, sites.Count(site => site.EndsWith(":File API", StringComparison.Ordinal)));
         Assert.Equal(2, sites.Count(site => site.EndsWith(":RandomAccess.Write", StringComparison.Ordinal)));
         Assert.DoesNotContain(sites, site => site.EndsWith(":UNRESOLVED mutation candidate", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SemanticCensusFindsNativeExactSetMutatorsAndIgnoresOpenExisting()
+    {
+        var sites = ProductionMutationAnalyzer.Analyze(new Dictionary<string, string>
+        {
+            ["Services/PlantedNativeMutators.cs"] = """
+                using System;
+                using System.IO;
+                using System.Runtime.InteropServices;
+                using Microsoft.Win32.SafeHandles;
+
+                sealed class PlantedNativeMutators
+                {
+                    [DllImport("kernel32.dll")]
+                    static extern SafeFileHandle CreateFileW(string path, uint access, FileShare share,
+                        IntPtr security, uint creationDisposition, uint flags, IntPtr template);
+                    [DllImport("kernel32.dll", EntryPoint = "CreateFileW")]
+                    static extern SafeFileHandle CreateFileForDeleteW(string path, uint access, FileShare share,
+                        IntPtr security, uint creationDisposition, uint flags, IntPtr template);
+                    [DllImport("ntdll.dll")]
+                    static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref int attributes,
+                        out int status, IntPtr allocation, FileAttributes fileAttributes, FileShare share,
+                        uint disposition, uint options, IntPtr buffer, uint length);
+                    [DllImport("kernel32.dll")]
+                    static extern bool SetFileInformationByHandle(SafeFileHandle handle, int kind,
+                        ref int information, uint size);
+                    [DllImport("kernel32.dll", EntryPoint = "SetFileInformationByHandle")]
+                    static extern bool SetFileInformationByHandleBuffer(SafeFileHandle handle, int kind,
+                        IntPtr information, uint size);
+                    [DllImport("ntdll.dll")]
+                    static extern int NtSetInformationFile(SafeFileHandle handle, out int status,
+                        IntPtr information, uint length, int kind);
+
+                    void Run(SafeFileHandle handle)
+                    {
+                        using var read = CreateFileW("read", 0, FileShare.Read, IntPtr.Zero, 3, 0, IntPtr.Zero);
+                        using var create = CreateFileW("create", 0, FileShare.Read, IntPtr.Zero, 1, 0, IntPtr.Zero);
+                        using var createWrapper = CreateFileForDeleteW(
+                            "create-wrapper", 0, FileShare.Read, IntPtr.Zero, 2, 0, IntPtr.Zero);
+                        var attributes = 0;
+                        _ = NtCreateFile(out _, 0, ref attributes, out _, IntPtr.Zero,
+                            FileAttributes.Normal, FileShare.Read, 2, 0, IntPtr.Zero, 0);
+                        _ = SetFileInformationByHandle(handle, 4, ref attributes, 4);
+                        _ = SetFileInformationByHandleBuffer(handle, 3, IntPtr.Zero, 0);
+                        _ = NtSetInformationFile(handle, out _, IntPtr.Zero, 0, 10);
+                    }
+                }
+                """,
+        });
+
+        Assert.Equal(2, sites.Count(site => site.EndsWith(":CreateFileW(create)", StringComparison.Ordinal)));
+        Assert.Single(sites, site => site.EndsWith(":NtCreateFile", StringComparison.Ordinal));
+        Assert.Single(sites, site => site.EndsWith(":SetFileInformationByHandle", StringComparison.Ordinal));
+        Assert.Single(sites, site => site.EndsWith(":SetFileInformationByHandleBuffer", StringComparison.Ordinal));
+        Assert.Single(sites, site => site.EndsWith(":NtSetInformationFile", StringComparison.Ordinal));
+        Assert.Equal(6, sites.Count);
     }
 
     [Fact]

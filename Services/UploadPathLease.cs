@@ -14,9 +14,9 @@ namespace VmbLauncher.Services;
 /// removals, and renames in the staged tree. This protects against arbitrary
 /// same-user processes, not only VMBLauncher instances that honor its semaphore.
 /// </summary>
-internal sealed class UploadPathLease : IDisposable
+internal sealed partial class UploadPathLease : IDisposable
 {
-    internal static Action<string>? JournalDurableBeforeFreezeForTest;
+    static partial void NotifyJournalDurableForTest(string path);
     private const uint FileListDirectory = 0x0001;
     private const uint ReadControl = 0x00020000;
     private const uint WriteDac = 0x00040000;
@@ -92,7 +92,7 @@ internal sealed class UploadPathLease : IDisposable
             aclJournalPath = UploadAclJournal.WriteBeforeFreeze(
                 stagingRoot,
                 directoryLeases);
-            JournalDurableBeforeFreezeForTest?.Invoke(aclJournalPath);
+            NotifyJournalDurableForTest(aclJournalPath);
 
             // Freeze the known directory set before testing any file for
             // presence. Otherwise a missing preview (or a new content path)
@@ -855,4 +855,10 @@ internal sealed class UploadPathLease : IDisposable
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle handle,
         out ByHandleFileInformation fileInformation);
+
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static Action<string>? JournalDurableBeforeFreezeForTest;
+    static partial void NotifyJournalDurableForTest(string path) =>
+        JournalDurableBeforeFreezeForTest?.Invoke(path);
+#endif
 }

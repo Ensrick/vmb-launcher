@@ -24,15 +24,21 @@ public static class CliDispatcher
     public static int Run(string[] args)
     {
         var parsed = CliArgs.Parse(args);
-        if (parsed.Help || parsed.Verb == "help")
-        {
-            PrintHelp();
-            return ExitOk;
-        }
         if (parsed.Unknown.Count > 0)
         {
             Console.Error.WriteLine($"vmblauncher: unknown or malformed argument(s): {string.Join(", ", parsed.Unknown)}");
             return ExitBadUsage;
+        }
+        var combinationError = ValidateArgumentCombination(parsed);
+        if (combinationError != null)
+        {
+            Console.Error.WriteLine($"vmblauncher: {combinationError}");
+            return ExitBadUsage;
+        }
+        if (parsed.Help || parsed.Verb == "help")
+        {
+            PrintHelp();
+            return ExitOk;
         }
 
         if (!parsed.NoBanner)
@@ -52,6 +58,24 @@ public static class CliDispatcher
             using var transaction = MachineTransactionLease.Enter(
                 $"cli-{parsed.Verb}", parsed.ModName, projectRoot: null, Console.WriteLine);
             var settings = LoadSettings(parsed.ConfigPath, forMutation: true);
+            if (parsed.Verb is "deploy" or "all" &&
+                !string.IsNullOrWhiteSpace(parsed.ModName))
+            {
+                // Availability recovery must not depend on a still-present
+                // project, mod directory, cfg, or bundle source. Argument
+                // syntax was validated before the lease/settings read, so a
+                // malformed invocation still performs no recovery mutation.
+                var recovery = ReceiptDeployStartupRecovery.RunBeforeDiscovery(
+                    settings,
+                    parsed.ModName,
+                    Console.WriteLine);
+                if (!recovery.Ok)
+                {
+                    Console.Error.WriteLine(
+                        $"vmblauncher: receipt-authority deploy recovery refused: {recovery.Message}");
+                    return ExitFailed;
+                }
+            }
             var changed = settings.AutoFillMissing();
             var project = settings.ResolveMutationProject()
                 ?? throw new InvalidOperationException("Project folder not configured.");
@@ -85,6 +109,35 @@ public static class CliDispatcher
 
     private static bool IsMutationVerb(string? verb) =>
         verb is "build" or "deploy" or "upload" or "all";
+
+    internal static string? ValidateArgumentCombination(CliArgs parsed)
+    {
+        if (IsMutationVerb(parsed.Verb) && string.IsNullOrWhiteSpace(parsed.ModName))
+            return $"{parsed.Verb} requires one nonempty positional mod name.";
+        if (parsed.DeploymentReceiptCount != 0)
+        {
+            if (parsed.DeploymentReceiptCount != 1)
+                return "--deployment-receipt must be supplied exactly once.";
+            if (string.IsNullOrWhiteSpace(parsed.DeploymentReceiptPath))
+                return "--deployment-receipt requires one nonempty path value.";
+            if (parsed.Verb != "deploy")
+                return "--deployment-receipt is valid only with the deploy verb.";
+            if (!parsed.NoRemote)
+                return "receipt-authority local deploy requires --deployment-receipt and --no-remote together; remote exact-set deployment is not implemented.";
+        }
+        if (parsed.PublicationReceiptCount != 0)
+        {
+            if (parsed.PublicationReceiptCount != 1)
+                return "--publication-receipt must be supplied exactly once.";
+            if (string.IsNullOrWhiteSpace(parsed.PublicationReceiptPath))
+                return "--publication-receipt requires one nonempty path value.";
+            if (parsed.Verb == "deploy")
+                return "deploy does not accept --publication-receipt; canonical local deployment uses the distinct --deployment-receipt.";
+            if (parsed.Verb is not ("upload" or "all"))
+                return "--publication-receipt is valid only with the upload or all verb.";
+        }
+        return null;
+    }
 
     private static Settings LoadSettings(string? overridePath, bool forMutation)
     {
@@ -125,10 +178,13 @@ VERBS
   doctor                            Run diagnostics (same checks the GUI's first-run dialog runs).
   capabilities                      Print machine-readable publication capabilities and schemas.
   build    <mod-name> [--clean]     VMB build the mod into bundleV2/.
-  deploy   <mod-name> [--no-remote] Copy bundleV2/ into Workshop content folder (hash-verified),
+  deploy   <mod-name> [--no-remote] [--deployment-receipt <path>]
+                                    Copy bundleV2/ into Workshop content folder (hash-verified),
                                     then push to every enabled remote target in
                                     settings.json (default: pc-b via Tailscale, auto-detected).
                                     --no-remote skips the remote push for this invocation only.
+                                    Canonical ship may pair --deployment-receipt with
+                                    --no-remote for receipt-authority local exact-set deploy.
   upload   <mod-name> [--allow-public] [--publication-receipt <path>]
                                     Internal final Workshop mutation used by tools/ship/ship.ps1.
                                     Before staging, rewrites itemV2.cfg's `title` suffix to

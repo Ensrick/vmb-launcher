@@ -1,8 +1,10 @@
 using System.Windows;
 using System.Runtime.CompilerServices;
 
+#if VMBLAUNCHER_TEST_HOOKS
 [assembly: InternalsVisibleTo("VmbLauncher.Tests")]
 [assembly: InternalsVisibleTo("VmbLauncher.TransactionLeaseWorker")]
+#endif
 
 [assembly:ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located

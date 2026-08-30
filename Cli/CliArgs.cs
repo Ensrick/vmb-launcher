@@ -21,7 +21,11 @@ public sealed class CliArgs
     public bool DryRunTitleRewrite { get; init; }
     public bool Help { get; init; }
     public string? ConfigPath { get; init; }
+    public int ConfigCount { get; init; }
     public string? PublicationReceiptPath { get; init; }
+    public int PublicationReceiptCount { get; init; }
+    public string? DeploymentReceiptPath { get; init; }
+    public int DeploymentReceiptCount { get; init; }
     public List<string> Unknown { get; init; } = new();
 
     public static CliArgs Parse(string[] args)
@@ -35,7 +39,11 @@ public sealed class CliArgs
         bool dryRunTitleRewrite = false;
         bool help = false;
         string? configPath = null;
+        int configCount = 0;
         string? publicationReceiptPath = null;
+        int publicationReceiptCount = 0;
+        string? deploymentReceiptPath = null;
+        int deploymentReceiptCount = 0;
         var unknown = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -67,13 +75,56 @@ public sealed class CliArgs
             }
             else if (a == "--config")
             {
-                if (i + 1 < args.Length) configPath = args[++i];
-                else unknown.Add("--config (missing value)");
+                configCount++;
+                if (configCount > 1)
+                    unknown.Add("--config (duplicate)");
+                if (!TryTakeValue(args, ref i, out var value))
+                {
+                    unknown.Add("--config (missing value)");
+                }
+                else if (string.IsNullOrWhiteSpace(value))
+                {
+                    unknown.Add("--config (empty value)");
+                }
+                else if (configCount == 1)
+                {
+                    configPath = value;
+                }
             }
             else if (a == "--publication-receipt")
             {
-                if (i + 1 < args.Length) publicationReceiptPath = args[++i];
-                else unknown.Add("--publication-receipt (missing value)");
+                publicationReceiptCount++;
+                if (publicationReceiptCount > 1)
+                    unknown.Add("--publication-receipt (duplicate)");
+                if (!TryTakeValue(args, ref i, out var value))
+                {
+                    unknown.Add("--publication-receipt (missing value)");
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(value))
+                        unknown.Add("--publication-receipt (empty value)");
+                    else if (publicationReceiptCount == 1)
+                        publicationReceiptPath = value;
+                }
+            }
+            else if (a == "--deployment-receipt")
+            {
+                deploymentReceiptCount++;
+                if (deploymentReceiptCount > 1)
+                    unknown.Add("--deployment-receipt (duplicate)");
+
+                if (!TryTakeValue(args, ref i, out var value))
+                {
+                    unknown.Add("--deployment-receipt (missing value)");
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(value))
+                        unknown.Add("--deployment-receipt (empty value)");
+                    else if (deploymentReceiptCount == 1)
+                        deploymentReceiptPath = value;
+                }
             }
             else if (a.StartsWith("--"))
             {
@@ -104,8 +155,30 @@ public sealed class CliArgs
             DryRunTitleRewrite = dryRunTitleRewrite,
             Help = help,
             ConfigPath = configPath,
+            ConfigCount = configCount,
             PublicationReceiptPath = publicationReceiptPath,
+            PublicationReceiptCount = publicationReceiptCount,
+            DeploymentReceiptPath = deploymentReceiptPath,
+            DeploymentReceiptCount = deploymentReceiptCount,
             Unknown = unknown,
         };
     }
+
+    /// <summary>
+    /// Value-taking flags never consume another flag/help token. In particular,
+    /// the short Windows help forms are not prefixed with "--", so testing only
+    /// StartsWith("--") would turn a malformed receipt into a successful help
+    /// invocation and could hide the remaining authorization flags.
+    /// </summary>
+    private static bool TryTakeValue(string[] args, ref int index, out string value)
+    {
+        value = "";
+        if (index + 1 >= args.Length || IsFlagOrHelpToken(args[index + 1]))
+            return false;
+        value = args[++index];
+        return true;
+    }
+
+    private static bool IsFlagOrHelpToken(string value) =>
+        value.StartsWith("-", StringComparison.Ordinal) || value == "/?";
 }

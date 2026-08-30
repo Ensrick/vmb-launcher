@@ -118,7 +118,9 @@ internal static class CmdShared
 
     public static int? PublicationReceiptPresenceCheck(CliArgs args)
     {
-        if (args.DryRunTitleRewrite || !string.IsNullOrWhiteSpace(args.PublicationReceiptPath))
+        if (args.DryRunTitleRewrite ||
+            (args.PublicationReceiptCount == 1 &&
+             !string.IsNullOrWhiteSpace(args.PublicationReceiptPath)))
             return null;
         Console.Error.WriteLine(
             "vmblauncher: Workshop publication requires --publication-receipt from tools/ship/ship.ps1. " +
@@ -133,6 +135,7 @@ internal static class CapabilitiesCommand
 {
     internal const int CapabilitySchema = 1;
     internal const int PublicationReceiptSchema = PublicationReceiptGate.Schema;
+    internal const int DeploymentReceiptSchema = PublicationReceiptGate.Schema;
     internal const string LockedUploadSnapshot = "locked-upload-snapshot-v1";
     internal const string HostedReceipt = "hosted-publication-receipt-v3";
     internal const string CommitBlobSnapshot = "git-commit-blob-snapshot-v1";
@@ -140,6 +143,7 @@ internal static class CapabilitiesCommand
     internal const string MachineTransactionLease = "machine-transaction-lease-v1";
     internal const string CrashSafeUploadAclJournal = "crash-safe-upload-acl-journal-v1";
     internal const string ReceiptAuthorityPublication = "receipt-authority-publication-v1";
+    internal const string ReceiptAuthorityLocalDeploy = "receipt-authority-local-deploy-v1";
 
     internal static IReadOnlyList<string> Lines()
     {
@@ -149,7 +153,8 @@ internal static class CapabilitiesCommand
             $"capability_schema={CapabilitySchema}",
             $"version={version}",
             $"publication_receipt_schema={PublicationReceiptSchema}",
-            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap},{MachineTransactionLease},{CrashSafeUploadAclJournal},{ReceiptAuthorityPublication}",
+            $"deployment_receipt_schema={DeploymentReceiptSchema}",
+            $"capabilities={HostedReceipt},{LockedUploadSnapshot},{CommitBlobSnapshot},{ConstrainedBootstrap},{MachineTransactionLease},{CrashSafeUploadAclJournal},{ReceiptAuthorityPublication},{ReceiptAuthorityLocalDeploy}",
         };
     }
 
@@ -269,7 +274,11 @@ internal static class DeployCommand
         if (mod == null) return CliDispatcher.ExitBadUsage;
 
         var runner = new ModRunner(settings, Console.WriteLine);
-        var outcome = runner.DeployAsync(mod, skipRemote: args.NoRemote, ct: default).GetAwaiter().GetResult();
+        var outcome = runner.DeployAsync(
+            mod,
+            skipRemote: args.NoRemote,
+            deploymentReceiptPath: args.DeploymentReceiptPath,
+            ct: default).GetAwaiter().GetResult();
         return CmdShared.RunOutcome(outcome, "deploy");
     }
 }

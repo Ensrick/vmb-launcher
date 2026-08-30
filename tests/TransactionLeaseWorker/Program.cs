@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
 using VmbLauncher.Services;
 
 static string Arg(string[] args, int index) =>
@@ -11,6 +13,127 @@ var root = Arg(args, 3);
 var marker = Arg(args, 4);
 var release = args.Length > 5 ? args[5] : "";
 var timeoutMs = args.Length > 6 ? int.Parse(args[6]) : 2000;
+
+if (mode == "receipt-deploy-membership-race")
+{
+    const string mod = "modx";
+    const string publishedId = "123456789";
+    const string commit = "0123456789abcdef0123456789abcdef01234567";
+    var checkpoint = Arg(args, 7);
+    var resultPath = Arg(args, 8);
+    using var lease = MachineTransactionLease.Enter(
+        mode,
+        mod,
+        root,
+        timeout: TimeSpan.FromMilliseconds(timeoutMs),
+        recordPath: record,
+        mutexName: semaphore);
+    var sourceDirectory = Path.Combine(root, "source");
+    var target = Path.Combine(root, "workshop", publishedId);
+    var expected = Census(sourceDirectory);
+    var authorization = new VerifiedCommitQualifiedExpectedSet(
+        mod,
+        publishedId,
+        commit,
+        new string('a', 64),
+        DateTime.UtcNow.AddMinutes(30),
+        expected);
+    using var source = ImmutableBundleSourceLease.Capture(
+        sourceDirectory,
+        mod,
+        expected);
+    var trace = new List<string>();
+    var gated = false;
+    LocalExactSetDeployment.TransitionForTest = point =>
+    {
+        trace.Add(point);
+        if (gated || point != checkpoint) return;
+        gated = true;
+        WriteAtomicText(marker, $"{Environment.ProcessId}|{point}");
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (!File.Exists(release))
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"membership-race release timeout at {point}");
+            Thread.Sleep(10);
+        }
+    };
+    RunOutcome result;
+    try
+    {
+        result = LocalExactSetDeployment.Reconcile(target, authorization, source);
+    }
+    finally
+    {
+        LocalExactSetDeployment.TransitionForTest = null;
+    }
+    WriteAtomicJson(resultPath, new
+    {
+        Pid = Environment.ProcessId,
+        result.Ok,
+        result.Message,
+        Trace = trace.ToArray(),
+    });
+    return result.Ok ? 0 : 93;
+}
+
+if (mode == "receipt-deploy-owner-crash")
+{
+    const string mod = "modx";
+    const string publishedId = "123456789";
+    const string commit = "0123456789abcdef0123456789abcdef01234567";
+    using var lease = MachineTransactionLease.Enter(
+        mode,
+        mod,
+        root,
+        timeout: TimeSpan.FromMilliseconds(timeoutMs),
+        recordPath: record,
+        mutexName: semaphore);
+    var sourceDirectory = Path.Combine(root, "source");
+    var target = Path.Combine(root, "workshop", publishedId);
+    var expected = Census(sourceDirectory);
+    var authorization = new VerifiedCommitQualifiedExpectedSet(
+        mod,
+        publishedId,
+        commit,
+        new string('a', 64),
+        DateTime.UtcNow.AddMinutes(30),
+        expected);
+    using var source = ImmutableBundleSourceLease.Capture(
+        sourceDirectory,
+        mod,
+        expected);
+    var releaseParts = release.Split('@', 2);
+    var releaseCheckpoint = releaseParts[0];
+    var releaseOccurrence = releaseParts.Length == 2 ? int.Parse(releaseParts[1]) : 1;
+    var checkpointOccurrences = 0;
+    LocalExactSetDeployment.TransitionForTest = point =>
+    {
+        if (point != releaseCheckpoint || ++checkpointOccurrences != releaseOccurrence) return;
+        WriteAtomicText(marker, point);
+        Environment.FailFast($"planted receipt-deploy hard crash at {point}");
+    };
+    var result = LocalExactSetDeployment.Reconcile(target, authorization, source);
+    File.WriteAllText(marker, $"checkpoint-not-reached|{result.Ok}|{result.Message}");
+    return 91;
+}
+
+if (mode == "receipt-deploy-recover")
+{
+    const string mod = "modx";
+    using var lease = MachineTransactionLease.Enter(
+        mode,
+        mod,
+        root,
+        timeout: TimeSpan.FromMilliseconds(timeoutMs),
+        recordPath: record,
+        mutexName: semaphore);
+    var result = LocalExactSetDeployment.RecoverInterruptedSafety(
+        Path.Combine(root, "workshop"),
+        mod);
+    File.WriteAllText(marker, $"{result.Ok}|{result.Message}");
+    return result.Ok ? 0 : 92;
+}
 
 if (mode == "process-runner-crash")
 {
@@ -200,3 +323,26 @@ using (var lease = MachineTransactionLease.Enter(
 }
 
 return 0;
+
+static IReadOnlyList<CommitQualifiedOutputFile> Census(string directory) =>
+    Directory.EnumerateFiles(directory)
+        .Select(path =>
+        {
+            var bytes = File.ReadAllBytes(path);
+            return new CommitQualifiedOutputFile(
+                Path.GetFileName(path),
+                bytes.LongLength,
+                Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+        })
+        .OrderBy(file => file.Name, StringComparer.Ordinal)
+        .ToArray();
+
+static void WriteAtomicJson(string path, object value)
+    => WriteAtomicText(path, JsonSerializer.Serialize(value));
+
+static void WriteAtomicText(string path, string value)
+{
+    var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+    File.WriteAllText(temporary, value);
+    File.Move(temporary, path);
+}

@@ -79,14 +79,40 @@ no invented Git blob; the exact map must match the pinned SDK staging bytes.
 Receipt-authority first-upload bootstrap remains disabled. Tracked hosted
 receipts retain their exact legacy top-level contract and Git-commit-blob path.
 
-The publication guard has a strict two-repository landing order:
-VMBLauncher **0.6.1 must be released and installed first**. Only then may the
-monorepo machine-transaction capability requirement land. `ship.ps1` probes
+VMBLauncher 0.6.2 also gives canonical ship a distinct, internal local-deploy
+boundary: `deploy <mod> --no-remote --deployment-receipt <path>`. The launcher
+independently authenticates the hosted schema-3 receipt, reconstructs its
+commit-qualified exact output set and positive `published_id`, proves and pins
+the matching `bundleV2` source bytes, and replaces exactly that one owned local
+Workshop directory. Missing, empty, duplicate, caller-authored, or invalid
+receipt authority fails before any new forward deployment and never falls
+through to ordinary deploy. Before either receipt-authority or ordinary deploy,
+the launcher first restores/finalizes an interrupted exact-set transaction for
+that mod using only its durable journal, physical directory identities, and
+recorded byte maps. Recovery therefore does not depend on a still-fresh receipt
+or still-present project, mod, or source. The bounded two-slot checksummed
+journal never replaces itself through an unowned temporary file. Unexpected
+membership is preserved: before durable commit the replacement is quarantined
+and the exact prior set is restored; after durable commit cleanup blocks for
+explicit review. Re-authenticating the same short-lived receipt is an
+idempotent replay of the same exact set; only each in-memory authorization
+object is single-consume. This capability is local only: it does not authorize
+remote exact-set deployment, updater installation, or a separate
+updater/recovery consumer.
+Ordinary direct `deploy` retains its copy behavior but cannot bypass an
+outstanding receipt-authority recovery.
+
+The publication and local-deploy guards have a strict two-repository landing
+order: VMBLauncher **0.6.2 must be released and installed first**. Only then may
+the monorepo receipt-authority local-deploy capability requirement land.
+`ship.ps1` probes
 `capabilities --no-banner` before any GitHub release mutation and fails closed
 against older launchers or one without the machine transaction, crash-safe ACL
 journal, exact-commit-blob, locked upload snapshot, and constrained first-upload
 boundaries. Receipt-authority publication additionally requires
-`receipt-authority-publication-v1`.
+`receipt-authority-publication-v1`; receipt-authority local deploy separately
+requires `receipt-authority-local-deploy-v1` and
+`deployment_receipt_schema=3`.
 
 All mutating launcher actions share
 `Global\Ensrick.VMBLauncher.Transaction.v1`. The lease covers settings
@@ -178,7 +204,9 @@ dotnet run -c Debug   # launch the GUI in debug mode
 
 ### Tests
 
-124 unit tests across all service classes (run via `test.ps1`). The downloader is fully tested with a mocked `HttpMessageHandler`, so it never hits the live GitHub API in CI.
+The xUnit suite covers the launcher service and command boundaries (run via
+`test.ps1`). The downloader is fully tested with a mocked `HttpMessageHandler`,
+so it never hits the live GitHub API in CI.
 
 Plus an end-to-end **headless smoke suite** at `tests/headless_smoke.ps1` that
 exercises the real binary against the real filesystem: every verb, every error

@@ -1,5 +1,43 @@
 # VMB Launcher Changelog
 
+## v0.6.2 (2026-08-26)
+
+### Added: receipt-authority local exact-set deployment (#1429)
+
+- Canonical ship may supply its distinct hosted `--deployment-receipt` only to
+  `deploy --no-remote`. Missing, empty, duplicate, caller-authored, expired, or
+  otherwise invalid receipt authority fails before any new forward deployment
+  and can never fall through to the ordinary deploy path.
+- The hosted/live/claim/schema-3 proof selects the committed positive
+  `published_id` and one canonical filename/length/SHA-256 output map. Mutable
+  cfg overrides and unqualified local files are not destination or byte
+  authority.
+- The launcher proves and pins the matching local `bundleV2` source bytes with
+  restrictive handles, then replaces exactly one owned local Workshop item
+  directory through a journaled same-volume transaction with verification and
+  rollback.
+- Before authenticating new forward authority or opening source bytes, every
+  deploy first restores/finalizes any exact journal-bound transaction for that
+  mod. Recovery uses only recorded physical identities and exact byte maps, so
+  an expired receipt, removed source, or missing project/mod cannot leave the
+  subscribed target absent. A fixed-size two-slot checksummed journal,
+  full physical directory/per-file identities, parent-handle-relative renames,
+  and handle-bound cleanup make every recorded crash window retryable.
+- Objects created before their physical identity becomes durable are never
+  adopted or deleted after a crash. Unexpected membership before durable
+  commit is preserved in a transaction-bound quarantine while the exact prior
+  deployment is restored; unexpected membership after durable commit is
+  preserved and blocks cleanup for explicit review.
+- Re-authenticating the same short-lived hosted receipt may idempotently deploy
+  only the same mod/workshop/source/output set. A single in-memory verified
+  authorization object is consumed once; this is not a durable replay ledger.
+- `deployment_receipt_schema=3` and
+  `receipt-authority-local-deploy-v1` advertise this separate boundary.
+  Receipt authority has not been extended to remote deployment, updater
+  installation, or a separate updater/recovery consumer. Ordinary tracked and
+  legacy copying remains unchanged, but both lanes refuse to bypass an
+  outstanding receipt-authority recovery.
+
 ## v0.6.1 (2026-08-26)
 
 ### Added: fail-closed publication for receipt-authority bundles (#1426)
