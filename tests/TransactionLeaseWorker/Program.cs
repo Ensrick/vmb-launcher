@@ -77,7 +77,7 @@ if (mode == "receipt-deploy-membership-race")
     return result.Ok ? 0 : 93;
 }
 
-if (mode == "receipt-deploy-owner-crash")
+if (mode is "receipt-deploy-owner-crash" or "receipt-deploy-rollback-owner-crash")
 {
     const string mod = "modx";
     const string publishedId = "123456789";
@@ -107,8 +107,19 @@ if (mode == "receipt-deploy-owner-crash")
     var releaseCheckpoint = releaseParts[0];
     var releaseOccurrence = releaseParts.Length == 2 ? int.Parse(releaseParts[1]) : 1;
     var checkpointOccurrences = 0;
+    var rollbackArmed = false;
     LocalExactSetDeployment.TransitionForTest = point =>
     {
+        if (mode == "receipt-deploy-rollback-owner-crash" && !rollbackArmed)
+        {
+            if (point == "membership-seals-applied")
+            {
+                rollbackArmed = true;
+                throw new IOException(
+                    "planted ordinary failure after membership seals for rollback");
+            }
+            return;
+        }
         if (point != releaseCheckpoint || ++checkpointOccurrences != releaseOccurrence) return;
         WriteAtomicText(marker, point);
         Environment.FailFast($"planted receipt-deploy hard crash at {point}");

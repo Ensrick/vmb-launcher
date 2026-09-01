@@ -23,7 +23,8 @@ internal static partial class LocalExactSetDeployment
         string path,
         DeployJournal journal,
         bool replace,
-        ExactDirectoryLease parentLease)
+        ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease = null)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(journal.OperationId, "^[0-9a-f]{32}$"))
             throw new InvalidDataException("Receipt-deploy journal operation identity is invalid.");
@@ -35,6 +36,11 @@ internal static partial class LocalExactSetDeployment
         if (journal.JournalIdentity == null)
             throw new InvalidDataException("Receipt-deploy journal lacks its durable physical identity.");
         var bytes = SerializeJournal(journal);
+        if (journalLease != null)
+        {
+            journalLease.Write(path, journal, bytes, parentLease);
+            return;
+        }
         WriteReplacementJournal(path, journal, bytes, parentLease);
     }
 
@@ -332,6 +338,134 @@ internal static partial class LocalExactSetDeployment
         }
     }
 
+    /// <summary>
+    /// Keeps one exact journal identity continuously pinned against external
+    /// write, rename, and deletion while a transaction relies on its durable
+    /// slots. All slot rewrites and final retirement use this same handle.
+    /// </summary>
+    private sealed class ExactJournalLease : IDisposable
+    {
+        private FileStream? _stream;
+
+        internal string CurrentPath { get; private set; }
+        internal SafeFileHandle Handle => _stream is { SafeFileHandle.IsClosed: false }
+            ? _stream.SafeFileHandle
+            : throw new ObjectDisposedException(nameof(ExactJournalLease));
+
+        private FileStream Stream => _stream
+            ?? throw new ObjectDisposedException(nameof(ExactJournalLease));
+
+        private ExactJournalLease(string path, FileStream stream)
+        {
+            CurrentPath = Normalize(path);
+            _stream = stream;
+        }
+
+        internal static ExactJournalLease Open(
+            string path,
+            DeployJournal expected,
+            string context)
+        {
+            var normalized = Normalize(path);
+            FileStream? stream = null;
+            try
+            {
+                stream = OpenPinnedJournalForUpdate(normalized);
+                var lease = Adopt(normalized, stream, expected, context);
+                stream = null;
+                return lease;
+            }
+            finally
+            {
+                stream?.Dispose();
+            }
+        }
+
+        internal static ExactJournalLease Adopt(
+            string path,
+            FileStream stream,
+            DeployJournal expected,
+            string context)
+        {
+            var lease = new ExactJournalLease(path, stream);
+            try
+            {
+                lease.RequireVersion(expected, context);
+                return lease;
+            }
+            catch
+            {
+                lease.Dispose();
+                throw;
+            }
+        }
+
+        internal DeployJournal Read(string context)
+        {
+            var journal = ReadJournal(Stream, CurrentPath);
+            if (journal.JournalIdentity == null)
+                throw new InvalidDataException($"{context} lacks its durable physical identity.");
+            return journal;
+        }
+
+        internal void RequireVersion(DeployJournal expected, string context) =>
+            RequireSameJournalVersion(Read(context), expected, context);
+
+        internal void Write(
+            string expectedPath,
+            DeployJournal journal,
+            byte[] bytes,
+            ExactDirectoryLease parentLease)
+        {
+            parentLease.RequireCurrentPath("journal lease update parent");
+            if (!string.Equals(
+                    CurrentPath,
+                    Normalize(expectedPath),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Journal lease update path differs from its pinned current path.");
+            if (!string.Equals(
+                    Normalize(Path.GetDirectoryName(CurrentPath)
+                        ?? throw new InvalidDataException("Journal lease path has no parent.")),
+                    parentLease.CurrentPath,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Journal lease path escapes its pinned parent.");
+            WriteReplacementJournal(Stream, CurrentPath, journal, bytes);
+        }
+
+        internal void RenameTo(
+            string destination,
+            ExactDirectoryLease parentLease,
+            DeployJournal expected,
+            string context)
+        {
+            var normalized = Normalize(destination);
+            parentLease.RequireCurrentPath(context + " parent");
+            if (!string.Equals(
+                    Normalize(Path.GetDirectoryName(normalized)
+                        ?? throw new InvalidDataException("Journal lease rename has no parent.")),
+                    parentLease.CurrentPath,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Journal lease rename escapes its pinned parent.");
+            RenamePinnedObject(
+                Handle,
+                normalized,
+                replaceIfExists: false,
+                parentLease.Handle);
+            CurrentPath = normalized;
+            RequireVersion(expected, context);
+        }
+
+        internal void MarkDeleteOnClose() =>
+            LocalExactSetDeployment.MarkDeleteOnClose(Handle);
+
+        public void Dispose()
+        {
+            _stream?.Dispose();
+            _stream = null;
+        }
+    }
+
     private sealed record JournalVersion(long Sequence, DeployJournal Journal);
 
     private static void DeleteJournal(
@@ -361,6 +495,21 @@ internal static partial class LocalExactSetDeployment
                 ReadJournal(stream, path),
                 expected,
                 "durable journal state proof");
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsExactDurableJournalVersion(
+        ExactJournalLease journalLease,
+        DeployJournal expected)
+    {
+        try
+        {
+            journalLease.RequireVersion(expected, "durable leased journal state proof");
             return true;
         }
         catch

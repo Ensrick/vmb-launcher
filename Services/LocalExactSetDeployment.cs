@@ -97,6 +97,7 @@ internal static partial class LocalExactSetDeployment
             TransactionPaths? paths = null;
             LocalExactSetMembershipSeal? parentMembershipSeal = null;
             LocalExactSetMembershipSeal? targetMembershipSeal = null;
+            ExactJournalLease? journalLease = null;
             try
             {
                 priorLease = ExactDirectoryLease.OpenExisting(
@@ -283,6 +284,7 @@ internal static partial class LocalExactSetDeployment
                         modName,
                         prior,
                         parentLease,
+                        null,
                         membershipFailure);
                     throw;
                 }
@@ -326,11 +328,20 @@ internal static partial class LocalExactSetDeployment
                         stageLease.Identity.FileIdLow,
                         stageLease.Identity.FileIdHigh,
                         paths.Target));
+                journalLease = ExactJournalLease.Open(
+                    paths.Journal,
+                    journal,
+                    "membership-seal journal lease");
                 journal.ParentMembershipSeal = DeployMembershipSeal.From(
                     parentMembershipSeal.Plan);
                 journal.TargetMembershipSeal = DeployMembershipSeal.From(
                     targetMembershipSeal.Plan);
-                WriteJournal(paths.Journal, journal, replace: true, parentLease);
+                WriteJournal(
+                    paths.Journal,
+                    journal,
+                    replace: true,
+                    parentLease,
+                    journalLease);
                 Checkpoint("membership-seals-planned");
                 parentMembershipSeal.Apply();
                 Checkpoint("parent-membership-seal-applied");
@@ -340,7 +351,12 @@ internal static partial class LocalExactSetDeployment
                 targetMembershipSeal.RequireApplied();
                 deployedProof.RequireCurrentNamespace(stageLease, "sealed deployed target");
                 journal.State = "cleanup";
-                WriteJournal(paths.Journal, journal, replace: true, parentLease);
+                WriteJournal(
+                    paths.Journal,
+                    journal,
+                    replace: true,
+                    parentLease,
+                    journalLease);
                 Checkpoint("cleanup-durable");
                 deployedProof.RequireCurrentNamespace(stageLease, "cleanup deployed target");
 
@@ -376,11 +392,13 @@ internal static partial class LocalExactSetDeployment
                 RetireJournalAfterStableMembership(
                     paths.Journal,
                     journal,
+                    journalLease,
                     parentLease,
                     stageLease,
                     deployedProof,
                     expected,
                     "final deployed target");
+                journalLease = null;
                 TryLog(log,
                     $"[receipt-deploy] exact local set installed at {Path.GetFileName(paths.Target)} ({expected.Count} files)");
                 return new(true, $"Deployed exact receipt-authority set ({expected.Count} file(s))");
@@ -393,17 +411,23 @@ internal static partial class LocalExactSetDeployment
             {
                 Exception? precommitCleanup = null;
                 Exception? membershipSealRestoration = null;
+                var membershipSealPairRestored = false;
                 try
                 {
+                    var hadMembershipSealPair =
+                        targetMembershipSeal != null && parentMembershipSeal != null;
                     targetMembershipSeal?.Restore();
                     parentMembershipSeal?.Restore();
+                    // Restoring an unprotected parent must not propagate ACL
+                    // changes into the already-restored target. Re-prove both
+                    // exact originals before retiring their durable plans.
+                    targetMembershipSeal?.RequireOriginal();
+                    parentMembershipSeal?.RequireOriginal();
+                    membershipSealPairRestored = hadMembershipSealPair;
                 }
                 catch (Exception ex)
                 {
                     membershipSealRestoration = ex;
-                }
-                finally
-                {
                     // A failed exact restoration must leave the durable plan
                     // and current ACL in place for authenticated recovery; do
                     // not let Dispose retry and mask the primary disposition.
@@ -426,24 +450,14 @@ internal static partial class LocalExactSetDeployment
                         precommitCleanup = ex;
                     }
                 }
-                stageProof?.Dispose();
-                stageProof = null;
-                backupProof?.Dispose();
-                backupProof = null;
-                deployedProof?.Dispose();
-                deployedProof = null;
-                priorProof?.Dispose();
-                priorProof = null;
-                stageLease?.Dispose();
-                stageLease = null;
-                priorLease?.Dispose();
-                priorLease = null;
                 if (membershipSealRestoration != null)
                     return new(false,
                         $"Receipt-authority local deploy stopped safely because its exact membership ACL could not be restored: {membershipSealRestoration.Message}. The durable journal was preserved for authenticated recovery.");
                 if (journal?.State == "cleanup" &&
                     paths != null &&
-                    IsExactDurableJournalVersion(paths.Journal, journal))
+                    (journalLease != null
+                        ? IsExactDurableJournalVersion(journalLease, journal)
+                        : IsExactDurableJournalVersion(paths.Journal, journal)))
                     return new(false,
                         $"Receipt-authority local deploy cleanup was interrupted after the replacement was proven: {failure.Message}. Retry will finalize the journal-bound cleanup without rolling back installed bytes.");
                 if (paths == null || journal == null || prior == null)
@@ -458,7 +472,9 @@ internal static partial class LocalExactSetDeployment
                 DeployJournal durableRollbackJournal;
                 try
                 {
-                    durableRollbackJournal = ReadJournal(paths.Journal);
+                    durableRollbackJournal = journalLease != null
+                        ? journalLease.Read("automatic rollback journal authority")
+                        : ReadJournal(paths.Journal);
                     RequireSameJournalTransaction(durableRollbackJournal, journal);
                 }
                 catch (Exception durableStateFailure)
@@ -469,6 +485,58 @@ internal static partial class LocalExactSetDeployment
                 if (durableRollbackJournal.State == "manual_review")
                     return new(false,
                         $"Receipt-authority local deploy stopped in a durable manual-review state and left the current journal-bound target contents in place; manual review is required: {failure.Message}");
+                var hasParentMembershipSeal =
+                    durableRollbackJournal.ParentMembershipSeal != null;
+                var hasTargetMembershipSeal =
+                    durableRollbackJournal.TargetMembershipSeal != null;
+                if (hasParentMembershipSeal != hasTargetMembershipSeal)
+                    return new(false,
+                        $"Receipt-authority local deploy failed: {failure.Message}. Automatic rollback stopped safely because its durable membership-seal plan pair was incomplete.");
+                if (hasParentMembershipSeal)
+                {
+                    if (!membershipSealPairRestored ||
+                        journalLease == null ||
+                        stageLease == null ||
+                        deployedProof == null)
+                        return new(false,
+                            $"Receipt-authority local deploy failed: {failure.Message}. Automatic rollback stopped safely because its membership-seal restoration authority was incomplete.");
+                    targetMembershipSeal!.RequireOriginal();
+                    parentMembershipSeal!.RequireOriginal();
+                    stageLease.RequireCurrentPath(
+                        "seal-plan retirement replacement target");
+                    RequireExact(
+                        deployedProof.Snapshot.Files,
+                        expected,
+                        "seal-plan retirement replacement target");
+                    deployedProof.RequireCurrentNamespace(
+                        stageLease,
+                        "seal-plan retirement replacement target");
+                    durableRollbackJournal.ParentMembershipSeal = null;
+                    durableRollbackJournal.TargetMembershipSeal = null;
+                    WriteJournal(
+                        paths.Journal,
+                        durableRollbackJournal,
+                        replace: true,
+                        parentLease,
+                        journalLease);
+                    Checkpoint("membership-seals-cleared-before-rollback");
+                }
+                targetMembershipSeal?.Dispose();
+                targetMembershipSeal = null;
+                parentMembershipSeal?.Dispose();
+                parentMembershipSeal = null;
+                stageProof?.Dispose();
+                stageProof = null;
+                backupProof?.Dispose();
+                backupProof = null;
+                deployedProof?.Dispose();
+                deployedProof = null;
+                priorProof?.Dispose();
+                priorProof = null;
+                stageLease?.Dispose();
+                stageLease = null;
+                priorLease?.Dispose();
+                priorLease = null;
                 if (durableRollbackJournal.State.StartsWith("prior_", StringComparison.Ordinal))
                 {
                     try
@@ -478,7 +546,13 @@ internal static partial class LocalExactSetDeployment
                             durableRollbackJournal,
                             modName,
                             authorization: null);
-                        RecoverValidatedJournal(recovery, log);
+                        using var recoveryJournalLease = journalLease ??
+                            ExactJournalLease.Open(
+                                paths.Journal,
+                                durableRollbackJournal,
+                                "prior reconstruction recovery journal lease");
+                        journalLease = null;
+                        RecoverValidatedJournal(recovery, recoveryJournalLease, log);
                     }
                     catch (Exception reconstruction)
                     {
@@ -492,7 +566,8 @@ internal static partial class LocalExactSetDeployment
                     modName,
                     prior,
                     expected,
-                    parentLease);
+                    parentLease,
+                    journalLease);
                 if (precommitCleanup != null)
                     rollback = rollback == null
                         ? precommitCleanup
@@ -511,6 +586,7 @@ internal static partial class LocalExactSetDeployment
                 priorProof?.Dispose();
                 backupProof?.Dispose();
                 deployedProof?.Dispose();
+                journalLease?.Dispose();
                 stageLease?.Dispose();
                 priorLease?.Dispose();
                 parentLease?.Dispose();
@@ -579,15 +655,18 @@ internal static partial class LocalExactSetDeployment
                 "Receipt-deploy journal namespace is ambiguous for this exact target.");
         var item = matches[0];
         RequireSupportedRecoverySchema(item.Journal);
-        RestoreCanonicalJournalName(item.Locator, item.Journal, item.SourcePath);
+        using var journalLease = RestoreCanonicalJournalNameAndOpenLease(
+            item.Locator,
+            item.Journal,
+            item.SourcePath);
         RefuseJournalTemps(locator.Parent);
-        var journal = ReadJournal(locator.Journal);
+        var journal = journalLease.Read("forward recovery journal authority");
         var recovery = ValidateRecoveryJournal(
             locator,
             journal,
             authorization.Mod,
             authorization);
-        RecoverValidatedJournal(recovery, log);
+        RecoverValidatedJournal(recovery, journalLease, log);
     }
 
     private static RecoveryContext ValidateRecoveryJournal(
@@ -700,6 +779,7 @@ internal static partial class LocalExactSetDeployment
 
     private static void RecoverValidatedJournal(
         RecoveryContext recovery,
+        ExactJournalLease journalLease,
         Action<string>? log)
     {
         var paths = recovery.Paths;
@@ -709,6 +789,7 @@ internal static partial class LocalExactSetDeployment
         var stagedFiles = recovery.Staged;
         var priorIdentity = recovery.PriorIdentity;
         var stageIdentity = recovery.StageIdentity;
+        journalLease.RequireVersion(journal, "validated recovery journal authority");
         if (journal.State == "manual_review")
             throw new InvalidDataException(
                 "Interrupted receipt-deploy journal requires manual review; no automatic mutation is authorized.");
@@ -717,7 +798,7 @@ internal static partial class LocalExactSetDeployment
         // opening any DELETE-capable directory lease; relying on a permissive
         // grandparent FILE_DELETE_CHILD grant makes crash recovery contingent
         // on an unrelated ancestor DACL.
-        RestoreRecordedMembershipSeals(
+        using var restoredMembershipSeals = RestoreRecordedMembershipSeals(
             journal,
             paths,
             journal.ParentIdentity.ToPhysical(paths.Parent),
@@ -727,6 +808,40 @@ internal static partial class LocalExactSetDeployment
             journal.ParentIdentity.ToPhysical(paths.Parent),
             "interrupted Workshop parent");
         parentLease.RequireCurrentPath("interrupted Workshop parent after membership-seal restoration");
+        if (journal.ParentMembershipSeal != null && journal.State != "cleanup")
+        {
+            using var sealedReplacementLease = ExactDirectoryLease.OpenExisting(
+                paths.Target,
+                stageIdentity!,
+                "restored seal-plan replacement target");
+            using var sealedReplacementProof = ExactDirectorySnapshotLease.Capture(
+                sealedReplacementLease,
+                journal.Mod,
+                requireExactOwner: true);
+            RequireExact(
+                sealedReplacementProof.Snapshot.Files,
+                expected,
+                "restored seal-plan replacement target");
+            restoredMembershipSeals!.RequireOriginal();
+            parentLease.RequireCurrentPath(
+                "restored seal-plan parent before retirement");
+            sealedReplacementProof.RequireCurrentNamespace(
+                sealedReplacementLease,
+                "restored seal-plan replacement target");
+            journal.ParentMembershipSeal = null;
+            journal.TargetMembershipSeal = null;
+            WriteJournal(
+                paths.Journal,
+                journal,
+                replace: true,
+                parentLease,
+                journalLease);
+            Checkpoint("membership-seals-cleared-before-rollback");
+        }
+        // Directory deletion remains pending while either seal handle is
+        // open. Their exact-original proof is complete at this point; release
+        // them before recovery starts any rename or delete.
+        restoredMembershipSeals?.Dispose();
         if (journal.State.StartsWith("prior_", StringComparison.Ordinal))
         {
             var priorSnapshot = new ExactDirectorySnapshot(
@@ -739,6 +854,7 @@ internal static partial class LocalExactSetDeployment
                 journal.Mod,
                 priorSnapshot,
                 parentLease,
+                journalLease,
                 new InvalidDataException(
                     "Interrupted mixed-prior reconstruction resumed from its durable journal."));
         }
@@ -816,6 +932,7 @@ internal static partial class LocalExactSetDeployment
             RetireJournalAfterStableMembership(
                 paths.Journal,
                 journal,
+                journalLease,
                 parentLease,
                 installedLease,
                 installedProof,
@@ -872,6 +989,7 @@ internal static partial class LocalExactSetDeployment
                         paths,
                         journal,
                         parentLease,
+                        journalLease,
                         stageLease,
                         stageIdentity,
                         "interrupted mixed replacement quarantine");
@@ -925,7 +1043,12 @@ internal static partial class LocalExactSetDeployment
             if (journal.State != "rollback_cleanup")
             {
                 journal.State = "rollback_cleanup";
-                WriteJournal(paths.Journal, journal, replace: true, parentLease);
+                WriteJournal(
+                    paths.Journal,
+                    journal,
+                    replace: true,
+                    parentLease,
+                    journalLease);
             }
             replacementProof?.Dispose();
             replacementProof = null;
@@ -942,6 +1065,7 @@ internal static partial class LocalExactSetDeployment
         RetireJournalAfterStableMembership(
             paths.Journal,
             journal,
+            journalLease,
             parentLease,
             priorTargetLease,
             priorTargetProof!,
@@ -1141,352 +1265,6 @@ internal static partial class LocalExactSetDeployment
         var match = expected.SingleOrDefault(file => file.Name == pending.CanonicalName);
         if (match == null || match.Length != pending.Length || match.Sha256 != pending.Sha256)
             throw new InvalidDataException("Pending stage-file proof differs from the expected set.");
-    }
-
-    private static void ValidateMembershipSealPlans(
-        DeployJournal journal,
-        TransactionPaths paths,
-        PhysicalDirectoryIdentity parentIdentity,
-        PhysicalDirectoryIdentity? targetIdentity)
-    {
-        var hasParent = journal.ParentMembershipSeal != null;
-        var hasTarget = journal.TargetMembershipSeal != null;
-        if (hasParent != hasTarget)
-            throw new InvalidDataException(
-                "Receipt-deploy journal has an incomplete membership-seal plan pair.");
-        if (!hasParent)
-        {
-            if (journal.State == "cleanup")
-                throw new InvalidDataException(
-                    "Committed receipt-deploy journal lacks its membership-seal authority.");
-            return;
-        }
-        if (journal.State is not ("verified" or "cleanup" or "rollback_cleanup" or "manual_review"))
-            throw new InvalidDataException(
-                "Receipt-deploy journal carries membership-seal plans before the verified boundary.");
-        if (targetIdentity == null)
-            throw new InvalidDataException(
-                "Receipt-deploy membership-seal plan lacks its replacement identity.");
-
-        var parentPlan = journal.ParentMembershipSeal!.ToPlan();
-        var targetPlan = journal.TargetMembershipSeal!.ToPlan();
-        if (parentPlan.DeniedRights !=
-                checked((int)LocalExactSetMembershipSeal.NamespaceDeniedRights) ||
-            targetPlan.DeniedRights !=
-                checked((int)LocalExactSetMembershipSeal.NamespaceDeniedRights) ||
-            !parentPlan.ToIdentity().SameObject(parentIdentity) ||
-            !targetPlan.ToIdentity().SameObject(targetIdentity) ||
-            !string.Equals(
-                Normalize(parentPlan.Path),
-                paths.Parent,
-                StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(
-                Normalize(targetPlan.Path),
-                paths.Target,
-                StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException(
-                "Receipt-deploy membership-seal plans do not match the exact journal identities and paths.");
-    }
-
-    private static void RestoreRecordedMembershipSeals(
-        DeployJournal journal,
-        TransactionPaths paths,
-        PhysicalDirectoryIdentity parentIdentity,
-        PhysicalDirectoryIdentity? targetIdentity)
-    {
-        ValidateMembershipSealPlans(journal, paths, parentIdentity, targetIdentity);
-        if (journal.ParentMembershipSeal == null) return;
-
-        LocalExactSetMembershipSeal? parent = null;
-        LocalExactSetMembershipSeal? target = null;
-        try
-        {
-            parent = LocalExactSetMembershipSeal.Resume(
-                journal.ParentMembershipSeal.ToPlan(),
-                parentIdentity);
-            target = LocalExactSetMembershipSeal.Resume(
-                journal.TargetMembershipSeal!.ToPlan(),
-                targetIdentity!);
-            target.Restore();
-            parent.Restore();
-            target.RequireOriginal();
-            parent.RequireOriginal();
-            Checkpoint("membership-seals-restored-recovery");
-        }
-        catch
-        {
-            target?.AbandonWithoutRestore();
-            parent?.AbandonWithoutRestore();
-            target = null;
-            parent = null;
-            throw;
-        }
-        finally
-        {
-            target?.Dispose();
-            parent?.Dispose();
-        }
-    }
-
-    private static void NormalizeRecordedStage(
-        ExactDirectoryLease stageLease,
-        DeployJournal journal,
-        IReadOnlyList<CommitQualifiedOutputFile> staged,
-        IReadOnlyList<DeployJournalFile> stagedRecords,
-        IReadOnlyList<CommitQualifiedOutputFile> expected)
-    {
-        stageLease.RequireCurrentPath("recorded staging directory");
-        var stageDirectory = stageLease.CurrentPath;
-        var allowedNames = staged.Select(file => file.Name).ToHashSet(StringComparer.Ordinal);
-        var pending = journal.PendingFile;
-        if (pending != null)
-        {
-            allowedNames.Add(pending.TempName);
-            allowedNames.Add(pending.CanonicalName);
-        }
-        var entries = Directory.EnumerateFileSystemEntries(stageDirectory)
-            .Take(MaximumManagedFiles + 1)
-            .ToArray();
-        if (entries.Length > MaximumManagedFiles)
-            throw new InvalidDataException("Recorded stage inventory exceeds its safety bound.");
-        var folded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
-        {
-            var name = Path.GetFileName(entry);
-            var attributes = File.GetAttributes(entry);
-            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
-                !allowedNames.Contains(name) || !folded.Add(name))
-                throw new InvalidDataException(
-                    $"Recorded stage contains an unknown, nested, reparse, or case-colliding entry: {name}");
-        }
-        var stagedIdentityMap = ToPhysicalMap(
-            stagedRecords,
-            stageDirectory,
-            requireIdentity: true);
-        foreach (var file in staged)
-        {
-            var identity = stagedIdentityMap[file.Name];
-            RequireExactFile(
-                Path.Combine(stageDirectory, file.Name),
-                file,
-                delete: false,
-                identity.VolumeSerialNumber,
-                identity.FileIdLow,
-                identity.FileIdHigh);
-        }
-
-        if (pending != null)
-        {
-            var tempPath = Path.Combine(stageDirectory, pending.TempName);
-            var canonicalPath = Path.Combine(stageDirectory, pending.CanonicalName);
-            var hasTemp = File.Exists(tempPath);
-            var hasCanonical = File.Exists(canonicalPath);
-            if (hasTemp && hasCanonical)
-                throw new InvalidDataException(
-                    "Pending stage file has both temporary and canonical leaves.");
-            if (hasTemp)
-                DeletePrecommittedTemp(
-                    tempPath,
-                    pending.TempVolumeSerialNumber,
-                    pending.TempFileIdLow,
-                    pending.TempFileIdHigh);
-            else if (hasCanonical)
-                RequireExactFile(
-                    canonicalPath,
-                    new CommitQualifiedOutputFile(
-                        pending.CanonicalName,
-                        pending.Length,
-                        pending.Sha256),
-                    delete: true,
-                    pending.TempVolumeSerialNumber,
-                    pending.TempFileIdLow,
-                    pending.TempFileIdHigh);
-            journal.PendingFile = null;
-        }
-
-        using var normalized = ExactDirectorySnapshotLease.Capture(
-            stageLease,
-            modName: "",
-            requireExactOwner: false);
-        RequireExact(normalized.Snapshot.Files, staged, "normalized staging directory");
-    }
-
-    private static Exception? TryRollback(
-        TransactionPaths paths,
-        DeployJournal journal,
-        string modName,
-        ExactDirectorySnapshot prior,
-        IReadOnlyList<CommitQualifiedOutputFile> expected,
-        ExactDirectoryLease parentLease)
-    {
-        ExactDirectoryLease? priorLease = null;
-        ExactDirectoryLease? stageLease = null;
-        ExactDirectorySnapshotLease? priorProof = null;
-        ExactDirectorySnapshotLease? replacementProof = null;
-        try
-        {
-            if (journal.State == "cleanup")
-                throw new InvalidOperationException(
-                    "Verified cleanup may only be finalized; it cannot be rolled back.");
-            if (Directory.Exists(paths.Backup))
-            {
-                priorLease = ExactDirectoryLease.OpenExisting(
-                    paths.Backup,
-                    prior.Identity,
-                    "rollback backup");
-                priorProof = ExactDirectorySnapshotLease.Capture(
-                    priorLease,
-                    modName,
-                    requireExactOwner: true);
-                RequireExact(priorProof.Snapshot.Files, prior.Files, "rollback backup");
-                if (Directory.Exists(paths.Target))
-                {
-                    if (Directory.Exists(paths.Stage))
-                        throw new InvalidDataException("Rollback has both target and stage; ownership is ambiguous.");
-                    var stageIdentity = journal.StageIdentity?.ToPhysical(paths.Stage)
-                        ?? throw new InvalidDataException("Rollback replacement lacks a stage identity.");
-                    stageLease = ExactDirectoryLease.OpenExisting(
-                        paths.Target,
-                        stageIdentity,
-                        "rollback replacement");
-                    try
-                    {
-                        replacementProof = ExactDirectorySnapshotLease.Capture(
-                            stageLease,
-                            modName,
-                            requireExactOwner: true);
-                        RequireExact(replacementProof.Snapshot.Files, expected, "rollback replacement");
-                    }
-                    catch (Exception membershipFailure)
-                    {
-                        replacementProof?.Dispose();
-                        replacementProof = null;
-                        paths = QuarantineRecordedReplacement(
-                            paths,
-                            journal,
-                            parentLease,
-                            stageLease,
-                            stageIdentity,
-                            "mixed replacement quarantine");
-                        Checkpoint("rollback-replacement-quarantined");
-                        priorProof.Dispose();
-                        priorProof = null;
-                        priorLease.RenameTo(
-                            parentLease,
-                            paths.Target,
-                            "quarantine rollback restored target");
-                        priorProof = ExactDirectorySnapshotLease.Capture(
-                            priorLease,
-                            modName,
-                            requireExactOwner: true);
-                        RequireExact(
-                            priorProof.Snapshot.Files,
-                            prior.Files,
-                            "quarantine rollback restored target");
-                        priorProof.RequireCurrentNamespace(
-                            priorLease,
-                            "quarantine rollback restored target");
-                        throw new InvalidDataException(
-                            "Mixed replacement was preserved in its journal-bound quarantine and the exact prior deployment was restored; manual review is required.",
-                            membershipFailure);
-                    }
-                    Checkpoint("rollback-replacement-pinned");
-                    replacementProof.Dispose();
-                    replacementProof = null;
-                    stageLease.RenameTo(
-                        parentLease,
-                        paths.Stage,
-                        "rollback replacement stage");
-                    replacementProof = ExactDirectorySnapshotLease.Capture(
-                        stageLease,
-                        modName,
-                        requireExactOwner: true);
-                    RequireExact(replacementProof.Snapshot.Files, expected, "rollback replacement stage");
-                }
-                Checkpoint("rollback-backup-pinned");
-                priorProof.Dispose();
-                priorProof = null;
-                priorLease.RenameTo(
-                    parentLease,
-                    paths.Target,
-                    "rollback restored target");
-                priorProof = ExactDirectorySnapshotLease.Capture(
-                    priorLease,
-                    modName,
-                    requireExactOwner: true);
-                RequireExact(priorProof.Snapshot.Files, prior.Files, "rollback restored target");
-                priorProof.RequireCurrentNamespace(priorLease, "rollback restored target");
-            }
-            if (priorLease == null)
-            {
-                priorLease = ExactDirectoryLease.OpenExisting(
-                    paths.Target,
-                    prior.Identity,
-                    "rollback prior target");
-                priorProof = ExactDirectorySnapshotLease.Capture(
-                    priorLease,
-                    modName,
-                    requireExactOwner: true);
-                RequireExact(priorProof.Snapshot.Files, prior.Files, "rollback prior target");
-            }
-            if (Directory.Exists(paths.Stage))
-            {
-                if (journal.StageIdentity == null)
-                {
-                    throw new InvalidDataException(
-                        "Unidentified precommitted stage is preserved; rollback lacks deletion authority.");
-                }
-                var stageIdentity = journal.StageIdentity.ToPhysical(paths.Stage);
-                var staged = ToOutputs(journal.StagedFiles);
-                stageLease ??= ExactDirectoryLease.OpenExisting(
-                    paths.Stage,
-                    stageIdentity,
-                    "rollback replacement");
-                replacementProof?.Dispose();
-                replacementProof = null;
-                if (journal.State != "rollback_cleanup")
-                {
-                    NormalizeRecordedStage(
-                        stageLease,
-                        journal,
-                        staged,
-                        journal.StagedFiles,
-                        expected);
-                    journal.State = "rollback_cleanup";
-                    WriteJournal(paths.Journal, journal, replace: true, parentLease);
-                }
-                DeleteRemainingExactDirectory(
-                    stageLease,
-                    staged,
-                    ToPhysicalMap(journal.StagedFiles, paths.Stage, requireIdentity: true),
-                    "rollback replacement");
-                stageLease = null;
-            }
-            priorLease.RequireCurrentPath("rollback final prior target");
-            RequireExact(priorProof!.Snapshot.Files, prior.Files, "rollback final prior target");
-            priorProof.RequireCurrentNamespace(priorLease, "rollback final prior target");
-            if (File.Exists(paths.Journal))
-                RetireJournalAfterStableMembership(
-                    paths.Journal,
-                    journal,
-                    parentLease,
-                    priorLease,
-                    priorProof!,
-                    prior.Files,
-                    "rollback final prior target");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            return ex;
-        }
-        finally
-        {
-            replacementProof?.Dispose();
-            priorProof?.Dispose();
-            stageLease?.Dispose();
-            priorLease?.Dispose();
-        }
     }
 
     private static void RequireExact(

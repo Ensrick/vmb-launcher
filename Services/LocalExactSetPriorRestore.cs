@@ -17,6 +17,7 @@ internal static partial class LocalExactSetDeployment
         string modName,
         ExactDirectorySnapshot prior,
         ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease,
         Exception membershipFailure)
     {
         var paths = initialPaths;
@@ -28,12 +29,14 @@ internal static partial class LocalExactSetDeployment
             restoreLease = OpenOrCreateRecordedRestore(
                 ref paths,
                 journal,
-                parentLease);
+                parentLease,
+                journalLease);
             mixedLease = OpenOrQuarantineMixedPrior(
                 ref paths,
                 journal,
                 prior,
                 parentLease,
+                journalLease,
                 restoreLease.Identity);
 
             MoveRecordedPriorLeaves(
@@ -41,7 +44,7 @@ internal static partial class LocalExactSetDeployment
                 restoreLease,
                 prior);
             journal.State = "prior_reconstructing";
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             Checkpoint("prior-restore-leaves-complete");
 
             restoreProof = ExactDirectorySnapshotLease.Capture(
@@ -64,7 +67,7 @@ internal static partial class LocalExactSetDeployment
                     "Cannot promote reconstructed prior deployment because the canonical target is occupied.");
 
             journal.State = "prior_reconstructed";
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             restoreProof.Dispose();
             restoreProof = null;
             Checkpoint("prior-restore-promotion-prepared");
@@ -85,7 +88,7 @@ internal static partial class LocalExactSetDeployment
                 restoreLease,
                 "promoted reconstructed prior deployment");
             journal.State = "manual_review";
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             Checkpoint("prior-restore-manual-review-durable");
             throw new InvalidDataException(
                 "Mixed prior deployment was preserved in its journal-bound quarantine and the exact recorded prior set was reconstructed; manual review is required.",
@@ -102,7 +105,8 @@ internal static partial class LocalExactSetDeployment
     private static ExactDirectoryLease OpenOrCreateRecordedRestore(
         ref TransactionPaths paths,
         DeployJournal journal,
-        ExactDirectoryLease parentLease)
+        ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease)
     {
         if (journal.RestoreIdentity != null)
         {
@@ -129,6 +133,7 @@ internal static partial class LocalExactSetDeployment
                     paths,
                     journal,
                     parentLease,
+                    journalLease,
                     kind: "restore");
                 continue;
             }
@@ -139,7 +144,7 @@ internal static partial class LocalExactSetDeployment
                 Checkpoint("prior-restore-directory-created-unrecorded");
                 journal.RestoreIdentity = DeployDirectoryIdentity.From(created.Identity);
                 journal.State = "prior_restore_prepared";
-                WriteJournal(paths.Journal, journal, replace: true, parentLease);
+                WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
                 Checkpoint("prior-restore-directory-recorded");
                 return created;
             }
@@ -154,6 +159,7 @@ internal static partial class LocalExactSetDeployment
                     paths,
                     journal,
                     parentLease,
+                    journalLease,
                     kind: "restore");
             }
             catch
@@ -171,6 +177,7 @@ internal static partial class LocalExactSetDeployment
         DeployJournal journal,
         ExactDirectorySnapshot prior,
         ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease,
         PhysicalDirectoryIdentity restoreIdentity)
     {
         if (journal.QuarantineIdentity != null && Directory.Exists(paths.Quarantine))
@@ -212,12 +219,13 @@ internal static partial class LocalExactSetDeployment
                     paths,
                     journal,
                     parentLease,
+                    journalLease,
                     kind: "quarantine");
                 continue;
             }
             journal.QuarantineIdentity = DeployDirectoryIdentity.From(mixed.Identity);
             journal.State = "prior_quarantine_prepared";
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             Checkpoint("prior-quarantine-rename-prepared");
             try
             {
@@ -233,12 +241,13 @@ internal static partial class LocalExactSetDeployment
                     paths,
                     journal,
                     parentLease,
+                    journalLease,
                     kind: "quarantine");
                 continue;
             }
             Checkpoint("prior-quarantined-before-journal");
             journal.State = "prior_quarantined";
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             Checkpoint("prior-quarantine-recorded");
             return mixed;
         }
@@ -250,6 +259,7 @@ internal static partial class LocalExactSetDeployment
         TransactionPaths paths,
         DeployJournal journal,
         ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease,
         string kind)
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -275,7 +285,7 @@ internal static partial class LocalExactSetDeployment
         {
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
-        WriteJournal(paths.Journal, journal, replace: true, parentLease);
+        WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
         Checkpoint($"{kind}-alternate-path-recorded");
         return paths;
     }
@@ -284,6 +294,7 @@ internal static partial class LocalExactSetDeployment
         TransactionPaths paths,
         DeployJournal journal,
         ExactDirectoryLease parentLease,
+        ExactJournalLease? journalLease,
         ExactDirectoryLease replacementLease,
         PhysicalDirectoryIdentity replacementIdentity,
         string context)
@@ -307,12 +318,13 @@ internal static partial class LocalExactSetDeployment
                         paths,
                         journal,
                         parentLease,
+                        journalLease,
                         kind: "quarantine");
                     continue;
                 }
             }
             journal.QuarantineIdentity = DeployDirectoryIdentity.From(replacementIdentity);
-            WriteJournal(paths.Journal, journal, replace: true, parentLease);
+            WriteJournal(paths.Journal, journal, replace: true, parentLease, journalLease);
             Checkpoint("replacement-quarantine-rename-prepared");
             try
             {
@@ -325,6 +337,7 @@ internal static partial class LocalExactSetDeployment
                     paths,
                     journal,
                     parentLease,
+                    journalLease,
                     kind: "quarantine");
                 continue;
             }

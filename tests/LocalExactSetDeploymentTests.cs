@@ -730,6 +730,96 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     }
 
     [Theory]
+    [InlineData("journal-slot-payload-flushed")]
+    [InlineData("journal-slot-header-partial")]
+    [InlineData("journal-slot-durable")]
+    [InlineData("membership-seals-cleared-before-rollback")]
+    [InlineData("rollback-backup-pinned")]
+    [InlineData("rollback-prior-restored-before-cleanup-journal")]
+    public void HardProcessDeathDuringSealPlanRetirementAndRollback_IsRecoveredByFreshProcess(
+        string checkpoint)
+    {
+        using var temp = new TempDir();
+        using var restrictiveGrandparent = DenyDeleteChildAndRestore(temp.Path);
+        var source = temp.CreateSubdir("source");
+        var parent = temp.CreateSubdir("workshop");
+        var target = temp.CreateSubdir(Path.Combine("workshop", PublishedId));
+        File.WriteAllText(Path.Combine(source, Mod + ".mod"), "new descriptor");
+        File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
+        File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
+        File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
+        var prior = Census(target);
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var priorDescriptorAcl = GetAcl(Path.Combine(target, Mod + ".mod"));
+        var priorBundleAcl = GetAcl(Path.Combine(target, OldBundle));
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
+        var worker = FindTransactionWorker();
+        var mutex = @"Local\VMBLauncher.Tests.ReceiptRollback." +
+            Guid.NewGuid().ToString("N");
+        var record = Path.Combine(temp.Path, "owner.json");
+        var crashMarker = Path.Combine(temp.Path, "crashed.txt");
+
+        using (var crash = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-rollback-owner-crash",
+                   mutex,
+                   record,
+                   temp.Path,
+                   crashMarker,
+                   checkpoint))
+        {
+            WaitForWorkerMarker(crashMarker, crash);
+            Assert.True(
+                crash.WaitForExit(30_000),
+                "receipt-deploy rollback crash worker did not exit");
+            Assert.NotEqual(0, crash.ExitCode);
+            Assert.Equal(checkpoint, File.ReadAllText(crashMarker));
+        }
+        Assert.True(File.Exists(record));
+        Directory.Delete(source, recursive: true);
+
+        var recoveryMarker = Path.Combine(temp.Path, "recovered.txt");
+        using (var recovery = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-recover",
+                   mutex,
+                   record,
+                   temp.Path,
+                   recoveryMarker,
+                   release: ""))
+        {
+            WaitForWorkerMarker(recoveryMarker, recovery);
+            Assert.True(
+                recovery.WaitForExit(30_000),
+                "receipt-deploy rollback recovery worker did not exit");
+            var detail = File.ReadAllText(recoveryMarker);
+            Assert.True(
+                recovery.ExitCode == 0,
+                $"receipt-deploy rollback recovery failed ({recovery.ExitCode}): {detail}\n{recovery.StandardError.ReadToEnd()}");
+            Assert.StartsWith("True|", detail, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(prior, Census(target));
+        Assert.Equal(parentAcl, GetAcl(parent));
+        Assert.Equal(targetAcl, GetAcl(target));
+        Assert.Equal(priorDescriptorAcl, GetAcl(Path.Combine(target, Mod + ".mod")));
+        Assert.Equal(priorBundleAcl, GetAcl(Path.Combine(target, OldBundle)));
+        Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+        Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
+        Assert.DoesNotContain(
+            Directory.EnumerateFileSystemEntries(parent),
+            path => Path.GetFileName(path).StartsWith(
+                $".vmblauncher-receipt-deploy-{PublishedId}",
+                StringComparison.Ordinal));
+        Assert.False(File.Exists(record));
+        Assert.False(Directory.Exists(source));
+    }
+
+    [Theory]
     [InlineData("cleanup-durable", false)]
     [InlineData("target-membership-seal-restored-before-parent", false)]
     [InlineData("parent-membership-seal-restored-before-reproof", false)]
@@ -1251,6 +1341,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         var foreignDirectory = Path.Combine(target, "final-boundary-directory");
         var expectedDescriptor = Path.Combine(target, Mod + ".mod");
         var movedDescriptor = Path.Combine(temp.Path, "moved-descriptor.mod");
+        var movedJournal = Path.Combine(temp.Path, "moved-journal.json");
         var incoming = Path.Combine(temp.Path, "incoming.mod_bundle");
         File.WriteAllText(incoming, "incoming");
 
@@ -1275,6 +1366,9 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             Assert.NotEqual(Environment.ProcessId, workerPid);
             var descriptorAclWhileSealed = GetAcl(expectedDescriptor);
             var bundleAclWhileSealed = GetAcl(Path.Combine(target, NewBundle));
+            var journal = Directory.EnumerateFiles(
+                parent,
+                ".vmblauncher-receipt-deploy-*.journal.json").Single();
 
             AssertAccessDenied(() => File.WriteAllText(foreign, "foreign"));
             AssertAccessDenied(() => Directory.CreateDirectory(foreignDirectory));
@@ -1284,9 +1378,14 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
                 File.Move(incoming, Path.Combine(target, "incoming.mod_bundle")));
             AssertAccessDenied(() =>
                 Directory.Move(target, Path.Combine(parent, "renamed-target")));
+            AssertAccessDenied(() => File.WriteAllText(journal, "foreign journal bytes"));
+            AssertAccessDenied(() => File.Delete(journal));
+            AssertAccessDenied(() => File.Move(journal, movedJournal));
             Assert.False(File.Exists(foreign));
             Assert.False(Directory.Exists(foreignDirectory));
             Assert.True(File.Exists(expectedDescriptor));
+            Assert.True(File.Exists(journal));
+            Assert.False(File.Exists(movedJournal));
             File.WriteAllText(release, "release");
 
             Assert.True(

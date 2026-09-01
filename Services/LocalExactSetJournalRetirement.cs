@@ -13,6 +13,7 @@ internal static partial class LocalExactSetDeployment
     private static void RetireJournalAfterStableMembership(
         string journalPath,
         DeployJournal journal,
+        ExactJournalLease journalLease,
         ExactDirectoryLease parentLease,
         ExactDirectoryLease protectedDirectory,
         ExactDirectorySnapshotLease protectedProof,
@@ -26,23 +27,24 @@ internal static partial class LocalExactSetDeployment
 
         // The witness path and current cleanup/rollback state reach durable
         // storage before the canonical journal name is removed.
-        WriteJournal(journalPath, journal, replace: true, parentLease);
+        WriteJournal(
+            journalPath,
+            journal,
+            replace: true,
+            parentLease,
+            journalLease);
         Checkpoint("journal-retirement-prepared");
 
         protectedDirectory.RequireCurrentPath(context);
         RequireExact(protectedProof.Snapshot.Files, expected, context);
         protectedProof.RequireCurrentNamespace(protectedDirectory, context);
 
-        using var journalStream = OpenPinnedJournalForUpdate(journalPath);
-        RequireSameJournalVersion(
-            ReadJournal(journalStream, journalPath),
-            journal,
-            "journal retirement authority");
-        RenamePinnedObject(
-            journalStream.SafeFileHandle,
+        journalLease.RequireVersion(journal, "journal retirement authority");
+        journalLease.RenameTo(
             witnessPath,
-            replaceIfExists: false,
-            parentLease.Handle);
+            parentLease,
+            journal,
+            "journal retirement witness");
         Checkpoint("journal-retirement-witness");
 
         try
@@ -50,7 +52,7 @@ internal static partial class LocalExactSetDeployment
             // cleanup was already committed while both OS seals were active.
             // This delete retires only the recovery record; no notification
             // cancellation result is treated as namespace authority.
-            MarkDeleteOnClose(journalStream.SafeFileHandle);
+            journalLease.MarkDeleteOnClose();
         }
         catch (Exception ex) when (BypassesAutomaticRecovery(ex))
         {
@@ -59,17 +61,16 @@ internal static partial class LocalExactSetDeployment
         catch (Exception retirementFailure)
         {
             TryRestoreRetirementWitness(
-                journalStream,
+                journalLease,
                 journalPath,
                 witnessPath,
                 parentLease,
-                journal,
-                manualReview: false);
+                journal);
             throw new InvalidDataException(
                 "Postcommit journal retirement failed; the durable recovery witness was restored.",
                 retirementFailure);
         }
-        journalStream.Dispose();
+        journalLease.Dispose();
         Checkpoint("journal-retirement-deleted");
         if (File.Exists(witnessPath) || Directory.Exists(witnessPath) ||
             File.Exists(journalPath) || Directory.Exists(journalPath))
@@ -77,15 +78,14 @@ internal static partial class LocalExactSetDeployment
     }
 
     private static void TryRestoreRetirementWitness(
-        FileStream witnessStream,
+        ExactJournalLease journalLease,
         string journalPath,
         string witnessPath,
         ExactDirectoryLease parentLease,
-        DeployJournal journal,
-        bool manualReview)
+        DeployJournal journal)
     {
         if (!string.Equals(
-                Normalize(ImmutableBundleSourceLease.GetFinalPath(witnessStream.SafeFileHandle)),
+                journalLease.CurrentPath,
                 witnessPath,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException(
@@ -93,15 +93,10 @@ internal static partial class LocalExactSetDeployment
         if (File.Exists(journalPath) || Directory.Exists(journalPath))
             throw new InvalidDataException(
                 "Receipt-deploy canonical journal path was occupied while its witness was retained.");
-        RenamePinnedObject(
-            witnessStream.SafeFileHandle,
+        journalLease.RenameTo(
             journalPath,
-            replaceIfExists: false,
-            parentLease.Handle);
-        if (manualReview)
-        {
-            journal.State = "manual_review";
-            WriteReplacementJournal(witnessStream, journalPath, journal);
-        }
+            parentLease,
+            journal,
+            "restored journal retirement witness");
     }
 }

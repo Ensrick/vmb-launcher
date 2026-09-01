@@ -80,7 +80,10 @@ internal static partial class LocalExactSetDeployment
                          value => value.Journal.PublishedId,
                          StringComparer.Ordinal))
             {
-                RestoreCanonicalJournalName(item.Locator, item.Journal, item.SourcePath);
+                using var journalLease = RestoreCanonicalJournalNameAndOpenLease(
+                    item.Locator,
+                    item.Journal,
+                    item.SourcePath);
                 if (!recoveredMods.Add(item.Journal.Mod))
                     throw new InvalidDataException(
                         "Multiple interrupted receipt-deploy journals claim the same mod; refusing ambiguous recovery.");
@@ -89,7 +92,7 @@ internal static partial class LocalExactSetDeployment
                     item.Journal,
                     item.Journal.Mod,
                     authorization: null);
-                RecoverValidatedJournal(recovery, log);
+                RecoverValidatedJournal(recovery, journalLease, log);
                 RefuseUnjournaledArtifacts(item.Locator);
             }
             return new(true, "Recovered interrupted receipt-authority local deployment state safely.");
@@ -162,32 +165,59 @@ internal static partial class LocalExactSetDeployment
         return result;
     }
 
-    private static void RestoreCanonicalJournalName(
+    private static ExactJournalLease RestoreCanonicalJournalNameAndOpenLease(
         TransactionLocator locator,
         DeployJournal journal,
         string sourcePath)
     {
-        if (string.Equals(sourcePath, locator.Journal, StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(sourcePath, locator.Journal, StringComparison.OrdinalIgnoreCase))
+            return ExactJournalLease.Open(
+                locator.Journal,
+                journal,
+                "canonical recovery journal lease");
         if (journal.State is not ("cleanup" or "rollback_cleanup"))
             throw new InvalidDataException(
                 "Receipt-deploy retirement witness is not in a finalizable durable state.");
         if (File.Exists(locator.Journal) || Directory.Exists(locator.Journal))
             throw new InvalidDataException(
                 "Receipt-deploy canonical journal path is occupied beside its retirement witness.");
-        using var parentLease = ExactDirectoryLease.OpenExisting(
-            locator.Parent,
-            journal.ParentIdentity.ToPhysical(locator.Parent),
-            "retirement-witness parent");
-        using var witness = OpenPinnedJournalForUpdate(sourcePath);
-        RequireSameJournalVersion(
-            ReadJournal(witness, sourcePath),
-            journal,
-            "retirement-witness recovery authority");
-        RenamePinnedObject(
-            witness.SafeFileHandle,
-            locator.Journal,
-            replaceIfExists: false,
-            parentLease.Handle);
-        Checkpoint("journal-retirement-witness-restored");
+        FileStream? witness = null;
+        RestoredMembershipSealPair? restoredMembershipSeals = null;
+        try
+        {
+            witness = OpenPinnedJournalForUpdate(sourcePath);
+            RequireSameJournalVersion(
+                ReadJournal(witness, sourcePath),
+                journal,
+                "retirement-witness recovery authority");
+            var paths = locator.FromJournal(journal);
+            restoredMembershipSeals = RestoreRecordedMembershipSeals(
+                journal,
+                paths,
+                journal.ParentIdentity.ToPhysical(paths.Parent),
+                journal.StageIdentity?.ToPhysical(paths.Target));
+            using var parentLease = ExactDirectoryLease.OpenExisting(
+                locator.Parent,
+                journal.ParentIdentity.ToPhysical(locator.Parent),
+                "retirement-witness parent after membership-seal restoration");
+            RenamePinnedObject(
+                witness.SafeFileHandle,
+                locator.Journal,
+                replaceIfExists: false,
+                parentLease.Handle);
+            Checkpoint("journal-retirement-witness-restored");
+            var lease = ExactJournalLease.Adopt(
+                locator.Journal,
+                witness,
+                journal,
+                "restored canonical recovery journal lease");
+            witness = null;
+            return lease;
+        }
+        finally
+        {
+            restoredMembershipSeals?.Dispose();
+            witness?.Dispose();
+        }
     }
 }
