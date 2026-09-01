@@ -3,10 +3,10 @@ using System.IO;
 namespace VmbLauncher.Services;
 
 /// <summary>
-/// Final journal retirement is mediated by a durable same-file witness and a
-/// kernel directory-notification cancellation race. This does not claim a
-/// continuous namespace seal; retirement is authorized only when the exact
-/// notification request terminates with ERROR_OPERATION_ABORTED.
+/// Journal retirement occurs only after the exact-set commit was made durable
+/// under the recorded NTFS membership seals and those ACLs were restored. The
+/// same-file witness keeps interrupted postcommit cleanup discoverable; it is
+/// not a namespace or commit authority.
 /// </summary>
 internal static partial class LocalExactSetDeployment
 {
@@ -29,9 +29,6 @@ internal static partial class LocalExactSetDeployment
         WriteJournal(journalPath, journal, replace: true, parentLease);
         Checkpoint("journal-retirement-prepared");
 
-        using var monitor = DirectoryMembershipMonitor.Arm(
-            protectedDirectory,
-            context + " membership monitor");
         protectedDirectory.RequireCurrentPath(context);
         RequireExact(protectedProof.Snapshot.Files, expected, context);
         protectedProof.RequireCurrentNamespace(protectedDirectory, context);
@@ -48,16 +45,18 @@ internal static partial class LocalExactSetDeployment
             parentLease.Handle);
         Checkpoint("journal-retirement-witness");
 
-        MembershipArbitration arbitration;
         try
         {
-            arbitration = monitor.CancelAndArbitrate();
+            // cleanup was already committed while both OS seals were active.
+            // This delete retires only the recovery record; no notification
+            // cancellation result is treated as namespace authority.
+            MarkDeleteOnClose(journalStream.SafeFileHandle);
         }
         catch (Exception ex) when (BypassesAutomaticRecovery(ex))
         {
             throw;
         }
-        catch (Exception arbitrationFailure)
+        catch (Exception retirementFailure)
         {
             TryRestoreRetirementWitness(
                 journalStream,
@@ -65,29 +64,11 @@ internal static partial class LocalExactSetDeployment
                 witnessPath,
                 parentLease,
                 journal,
-                manualReview: true);
+                manualReview: false);
             throw new InvalidDataException(
-                "Target membership arbitration was uncertain; the durable journal was retained.",
-                arbitrationFailure);
+                "Postcommit journal retirement failed; the durable recovery witness was restored.",
+                retirementFailure);
         }
-
-        if (arbitration != MembershipArbitration.CancelWon)
-        {
-            TryRestoreRetirementWitness(
-                journalStream,
-                journalPath,
-                witnessPath,
-                parentLease,
-                journal,
-                manualReview: true);
-            throw new InvalidDataException(
-                "Target membership changed or could not be proven stable; the durable journal was retained for manual review.");
-        }
-
-        // Cancellation completed the exact kernel notification request with
-        // ERROR_OPERATION_ABORTED. That is the transaction commit point.
-        // Later changes are postcommit activity; witness deletion is cleanup.
-        MarkDeleteOnClose(journalStream.SafeFileHandle);
         journalStream.Dispose();
         Checkpoint("journal-retirement-deleted");
         if (File.Exists(witnessPath) || Directory.Exists(witnessPath) ||

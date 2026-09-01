@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -20,43 +21,6 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     private const string Commit = "0123456789abcdef0123456789abcdef01234567";
     private const string NewBundle = "0123456789abcdef.mod_bundle";
     private const string OldBundle = "fedcba9876543210.mod_bundle";
-
-    [Fact]
-    public void MembershipDisposePolicy_NeverReleasesSignaledIncompleteNativeStorage()
-    {
-        Assert.Equal(
-            LocalExactSetDeployment.MembershipDisposePlan.CloseAndRetain,
-            LocalExactSetDeployment.PlanMembershipNativeDisposal(
-                LocalExactSetDeployment.MembershipNativeCompletion.SignaledButIncomplete));
-        Assert.Equal(
-            LocalExactSetDeployment.MembershipDisposePlan.Release,
-            LocalExactSetDeployment.PlanMembershipNativeDisposal(
-                LocalExactSetDeployment.MembershipNativeCompletion.Terminal));
-        Assert.Equal(
-            LocalExactSetDeployment.MembershipDisposePlan.CloseThenWait,
-            LocalExactSetDeployment.PlanMembershipNativeDisposal(
-                LocalExactSetDeployment.MembershipNativeCompletion.TimedOut));
-    }
-
-    [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void MembershipDisposePolicy_RetainsPendingStorageWithoutUsableNativeRequest(
-        bool directoryUsable,
-        bool overlappedAvailable)
-    {
-        Assert.Equal(
-            LocalExactSetDeployment.MembershipPendingDisposePlan.Retain,
-            LocalExactSetDeployment.PlanMembershipPendingDisposal(
-                directoryUsable,
-                overlappedAvailable));
-        Assert.Equal(
-            LocalExactSetDeployment.MembershipPendingDisposePlan.ObserveCompletion,
-            LocalExactSetDeployment.PlanMembershipPendingDisposal(
-                directoryUsable: true,
-                overlappedAvailable: true));
-    }
 
     [Fact]
     public void Reconcile_ReplacesOwnedDirectoryWithCompleteExpectedSet()
@@ -412,7 +376,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     [InlineData("cleanup-files-cleared")]
     [InlineData("backup-deleted")]
     [InlineData("journal-retirement-witness")]
-    [InlineData("membership-monitor-cancel-won")]
+    [InlineData("membership-seals-applied")]
     public void InterruptedCheckpoint_IsRecoveredThenFreshAttemptCompletes(string checkpoint)
     {
         using var fixture = new Fixture();
@@ -684,6 +648,9 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     [Theory]
     [InlineData("journal-slot-payload-flushed@2")]
     [InlineData("target-moved-before-journal")]
+    [InlineData("membership-seals-planned")]
+    [InlineData("parent-membership-seal-applied")]
+    [InlineData("membership-seals-applied")]
     public void HardProcessDeath_IsRecoveredByAFreshLeaseWithoutReceiptOrSource(
         string checkpoint)
     {
@@ -748,10 +715,13 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     }
 
     [Theory]
-    [InlineData("journal-retirement-witness")]
-    [InlineData("membership-monitor-cancel-won")]
+    [InlineData("cleanup-durable", false)]
+    [InlineData("target-membership-seal-restored-before-parent", false)]
+    [InlineData("parent-membership-seal-restored-before-reproof", false)]
+    [InlineData("journal-retirement-witness", true)]
     public void HardProcessDeathDuringJournalRetirement_RecoversInstalledSet(
-        string checkpoint)
+        string checkpoint,
+        bool witnessExpected)
     {
         using var temp = new TempDir();
         var source = temp.CreateSubdir("source");
@@ -761,7 +731,15 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
         File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
         File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
         var expected = Census(source);
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var priorDescriptorAcl = GetAcl(Path.Combine(target, Mod + ".mod"));
+        var priorBundleAcl = GetAcl(Path.Combine(target, OldBundle));
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
         var worker = FindTransactionWorker();
         var mutex = @"Local\VMBLauncher.Tests.ReceiptRetirement." +
             Guid.NewGuid().ToString("N");
@@ -786,12 +764,20 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         }
         Assert.True(File.Exists(record));
         Assert.Equal(expected, Census(target));
-        Assert.Empty(Directory.EnumerateFiles(
-            parent,
-            ".vmblauncher-receipt-deploy-*.journal.json"));
-        Assert.Single(Directory.EnumerateFiles(
-            parent,
-            ".vmblauncher-receipt-deploy-*.journal.json.retiring-*"));
+        Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+        Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
+        Assert.Equal(priorDescriptorAcl, GetAcl(Path.Combine(target, Mod + ".mod")));
+        Assert.Equal(priorBundleAcl, GetAcl(Path.Combine(target, NewBundle)));
+        Assert.Equal(
+            witnessExpected ? 0 : 1,
+            Directory.EnumerateFiles(
+                parent,
+                ".vmblauncher-receipt-deploy-*.journal.json").Count());
+        Assert.Equal(
+            witnessExpected ? 1 : 0,
+            Directory.EnumerateFiles(
+                parent,
+                ".vmblauncher-receipt-deploy-*.journal.json.retiring-*").Count());
         Directory.Delete(source, recursive: true);
 
         var recoveryMarker = Path.Combine(temp.Path, "recovered.txt");
@@ -816,6 +802,12 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         }
 
         Assert.Equal(expected, Census(target));
+        Assert.Equal(parentAcl, GetAcl(parent));
+        Assert.Equal(targetAcl, GetAcl(target));
+        Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+        Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
+        Assert.Equal(priorDescriptorAcl, GetAcl(Path.Combine(target, Mod + ".mod")));
+        Assert.Equal(priorBundleAcl, GetAcl(Path.Combine(target, NewBundle)));
         Assert.DoesNotContain(
             Directory.EnumerateFileSystemEntries(parent),
             path => Path.GetFileName(path).StartsWith(
@@ -962,7 +954,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         var injected = false;
         LocalExactSetDeployment.TransitionForTest = point =>
         {
-            if (point == "target-verified") armed = true;
+            if (point == "membership-seals-applied") armed = true;
             if (!armed || point != checkpoint || injected) return;
             injected = true;
             throw new IOException("ordinary cleanup journal interruption");
@@ -995,7 +987,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         var injected = false;
         LocalExactSetDeployment.TransitionForTest = point =>
         {
-            if (point == "target-verified") armed = true;
+            if (point == "membership-seals-applied") armed = true;
             if (!armed || point != "journal-slot-durable" || injected) return;
             injected = true;
             throw new IOException("ordinary durable cleanup journal interruption");
@@ -1180,15 +1172,20 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     }
 
     [Fact]
-    public void ForeignInsertionAfterDurableCommit_IsPreservedWithoutRollbackOrCleanup()
+    public void ForeignInsertionAtDurableCommit_IsDeniedByTheOsSeal()
     {
         using var fixture = new Fixture();
         using var source = fixture.Capture();
         var foreign = Path.Combine(fixture.Target, "human-owned.txt");
+        var attempted = false;
         LocalExactSetDeployment.TransitionForTest = point =>
         {
             if (point == "cleanup-durable")
-                File.WriteAllText(foreign, "preserve me");
+            {
+                attempted = true;
+                Assert.ThrowsAny<UnauthorizedAccessException>(() =>
+                    File.WriteAllText(foreign, "must be denied"));
+            }
         };
         RunOutcome result;
         try
@@ -1203,24 +1200,17 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             LocalExactSetDeployment.TransitionForTest = null;
         }
 
-        Assert.False(result.Ok);
-        Assert.Contains("cleanup", result.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("preserve me", File.ReadAllText(foreign));
-        Assert.True(Directory.EnumerateDirectories(
-            fixture.Parent,
-            ".vmblauncher-receipt-deploy-*.backup").Any());
-        var recovery = LocalExactSetDeployment.RecoverInterruptedSafety(fixture.Parent, Mod);
-        Assert.False(recovery.Ok);
-        Assert.Equal("preserve me", File.ReadAllText(foreign));
+        Assert.True(attempted);
+        Assert.True(result.Ok, result.Message);
+        Assert.False(File.Exists(foreign));
+        fixture.AssertTarget(fixture.Expected);
+        fixture.AssertNoTransactionArtifacts();
     }
 
-    [Theory]
-    [InlineData("journal-retirement-witness", false)]
-    [InlineData("membership-monitor-cancel-won", true)]
-    public void FinalMembershipBoundary_ArbitratesIndependentProcessMutation(
-        string gatedCheckpoint,
-        bool postcommit)
+    [Fact]
+    public void FinalMembershipBoundary_OsSealsRefuseIndependentProcessMutation()
     {
+        const string gatedCheckpoint = "membership-seals-applied";
         using var temp = new TempDir();
         var source = temp.CreateSubdir("source");
         var parent = temp.CreateSubdir("workshop");
@@ -1229,6 +1219,12 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
         File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
         File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
         var worker = FindTransactionWorker();
         var mutex = @"Local\VMBLauncher.Tests.MembershipRace." + Guid.NewGuid().ToString("N");
         var record = Path.Combine(temp.Path, "owner.json");
@@ -1236,6 +1232,11 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         var release = Path.Combine(temp.Path, "worker.release");
         var resultPath = Path.Combine(temp.Path, "worker.result.json");
         var foreign = Path.Combine(target, "final-boundary-foreign.txt");
+        var foreignDirectory = Path.Combine(target, "final-boundary-directory");
+        var expectedDescriptor = Path.Combine(target, Mod + ".mod");
+        var movedDescriptor = Path.Combine(temp.Path, "moved-descriptor.mod");
+        var incoming = Path.Combine(temp.Path, "incoming.mod_bundle");
+        File.WriteAllText(incoming, "incoming");
 
         using var process = StartTransactionWorker(
             worker,
@@ -1256,18 +1257,20 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             Assert.True(int.TryParse(readyParts[0], out var workerPid));
             Assert.Equal(process.Id, workerPid);
             Assert.NotEqual(Environment.ProcessId, workerPid);
+            var descriptorAclWhileSealed = GetAcl(expectedDescriptor);
+            var bundleAclWhileSealed = GetAcl(Path.Combine(target, NewBundle));
 
-            var foreignBytes = System.Text.Encoding.UTF8.GetBytes(
-                "preserve at commit boundary");
-            using (var write = new FileStream(
-                       foreign,
-                       FileMode.CreateNew,
-                       FileAccess.Write,
-                       FileShare.Read))
-            {
-                write.Write(foreignBytes);
-                write.Flush(flushToDisk: true);
-            }
+            AssertAccessDenied(() => File.WriteAllText(foreign, "foreign"));
+            AssertAccessDenied(() => Directory.CreateDirectory(foreignDirectory));
+            AssertAccessDenied(() => File.Delete(expectedDescriptor));
+            AssertAccessDenied(() => File.Move(expectedDescriptor, movedDescriptor));
+            AssertAccessDenied(() =>
+                File.Move(incoming, Path.Combine(target, "incoming.mod_bundle")));
+            AssertAccessDenied(() =>
+                Directory.Move(target, Path.Combine(parent, "renamed-target")));
+            Assert.False(File.Exists(foreign));
+            Assert.False(Directory.Exists(foreignDirectory));
+            Assert.True(File.Exists(expectedDescriptor));
             File.WriteAllText(release, "release");
 
             Assert.True(
@@ -1281,78 +1284,38 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
                 File.ReadAllText(resultPath));
             Assert.NotNull(workerResult);
             Assert.Equal(workerPid, workerResult.Pid);
-            Assert.Equal(postcommit, workerResult.Ok);
-            Assert.Equal(postcommit ? 0 : 93, process.ExitCode);
-            var expectedTrace = postcommit
-                ? new[]
-                {
-                    "membership-monitor-armed",
-                    "journal-retirement-witness",
-                    "membership-monitor-terminal",
-                    "membership-monitor-cancel-won",
-                    "journal-retirement-deleted",
-                }
-                : new[]
-                {
-                    "membership-monitor-armed",
-                    "journal-retirement-witness",
-                    "membership-monitor-terminal",
-                    "membership-monitor-change-won",
-                };
-            AssertTraceOrder(workerResult.Trace, expectedTrace);
-            Assert.Equal(
-                postcommit,
-                workerResult.Trace.Contains("journal-retirement-deleted", StringComparer.Ordinal));
+            Assert.True(workerResult.Ok, workerResult.Message);
+            Assert.Equal(0, process.ExitCode);
+            AssertTraceOrder(workerResult.Trace, new[]
+            {
+                "membership-seals-planned",
+                "parent-membership-seal-applied",
+                "membership-seals-applied",
+                "cleanup-durable",
+                "target-membership-seal-restored-before-parent",
+                "parent-membership-seal-restored-before-reproof",
+                "membership-seals-restored",
+                "journal-retirement-witness",
+                "journal-retirement-deleted",
+            });
             Assert.DoesNotContain(
-                postcommit
-                    ? "membership-monitor-change-won"
-                    : "membership-monitor-cancel-won",
-                workerResult.Trace);
-            Assert.Equal(foreignBytes, File.ReadAllBytes(foreign));
+                workerResult.Trace,
+                point => point.StartsWith("membership-monitor-", StringComparison.Ordinal));
+            Assert.False(File.Exists(foreign));
             Assert.Equal("new descriptor", File.ReadAllText(Path.Combine(target, Mod + ".mod")));
             Assert.Equal("new bundle bytes", File.ReadAllText(Path.Combine(target, NewBundle)));
             Assert.False(File.Exists(Path.Combine(target, OldBundle)));
-
-            if (postcommit)
-            {
-                Assert.DoesNotContain(
-                    Directory.EnumerateFileSystemEntries(parent),
-                    path => Path.GetFileName(path).StartsWith(
-                        $".vmblauncher-receipt-deploy-{PublishedId}",
-                        StringComparison.Ordinal));
-            }
-            else
-            {
-                Assert.Contains(
-                    "manual review",
-                    workerResult.Message,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.Contains(
-                    "left the current journal-bound target contents in place",
-                    workerResult.Message,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.DoesNotContain(
-                    "restored the exact prior deployment",
-                    workerResult.Message,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.Single(Directory.EnumerateFiles(
-                    parent,
-                    ".vmblauncher-receipt-deploy-*.journal.json"));
-                Assert.Empty(Directory.EnumerateFiles(
-                    parent,
-                    ".vmblauncher-receipt-deploy-*.journal.json.retiring-*"));
-                File.Delete(foreign);
-                var recovery = LocalExactSetDeployment.RecoverInterruptedSafety(parent, Mod);
-                Assert.False(recovery.Ok);
-                Assert.Contains(
-                    "manual review",
-                    recovery.Message,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.Single(Directory.EnumerateFiles(
-                    parent,
-                    ".vmblauncher-receipt-deploy-*.journal.json"));
-                Assert.False(File.Exists(foreign));
-            }
+            Assert.Equal(parentAcl, GetAcl(parent));
+            Assert.Equal(targetAcl, GetAcl(target));
+            Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+            Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
+            Assert.Equal(descriptorAclWhileSealed, GetAcl(expectedDescriptor));
+            Assert.Equal(bundleAclWhileSealed, GetAcl(Path.Combine(target, NewBundle)));
+            Assert.DoesNotContain(
+                Directory.EnumerateFileSystemEntries(parent),
+                path => Path.GetFileName(path).StartsWith(
+                    $".vmblauncher-receipt-deploy-{PublishedId}",
+                    StringComparison.Ordinal));
         }
         finally
         {
@@ -1924,6 +1887,43 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     }
 
     [Fact]
+    public void PreReleaseSchema4Journal_IsExplicitlyPreservedWithoutRecoveryMutation()
+    {
+        using var fixture = new Fixture();
+        using var source = fixture.Capture();
+        LocalExactSetDeployment.TransitionForTest = point =>
+        {
+            if (point == "journal-durable")
+                throw new LocalDeploySimulatedCrashForTest(point);
+        };
+        try
+        {
+            Assert.Throws<LocalDeploySimulatedCrashForTest>(() =>
+                LocalExactSetDeployment.Reconcile(
+                    fixture.Target, fixture.Authorization(), source));
+        }
+        finally
+        {
+            LocalExactSetDeployment.TransitionForTest = null;
+        }
+        var journal = Directory.EnumerateFiles(
+            fixture.Parent, ".vmblauncher-receipt-deploy-*.journal.json").Single();
+        var current = System.Text.Encoding.UTF8.GetString(ReadNewestJournalPayload(journal));
+        Assert.Contains("\"schema\": 5", current, StringComparison.Ordinal);
+        var schema4 = current.Replace("\"schema\": 5", "\"schema\": 4", StringComparison.Ordinal);
+        ReplaceNewestJournalPayload(journal, System.Text.Encoding.UTF8.GetBytes(schema4));
+        using var retrySource = fixture.Capture();
+
+        var retry = LocalExactSetDeployment.Reconcile(
+            fixture.Target, fixture.Authorization(), retrySource);
+
+        Assert.False(retry.Ok);
+        Assert.Contains("schema-4", retry.Message, StringComparison.OrdinalIgnoreCase);
+        fixture.AssertTarget(fixture.Prior);
+        Assert.True(File.Exists(journal));
+    }
+
+    [Fact]
     public void AuthorizationObject_IsReadOnlyAndSingleConsumeWithinProcess()
     {
         using var fixture = new Fixture();
@@ -2078,6 +2078,34 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         stream.Flush(flushToDisk: true);
     }
 
+    private static byte[] ReadNewestJournalPayload(string path)
+    {
+        const int slotBytes = 8 * 1024 * 1024;
+        const int headerBytes = 48;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var header = new byte[headerBytes];
+        long newestSequence = 0;
+        var newestSlot = -1;
+        var newestLength = 0;
+        for (var slot = 0; slot < 2; slot++)
+        {
+            stream.Position = (long)slot * slotBytes;
+            stream.ReadExactly(header);
+            var sequence = BinaryPrimitives.ReadInt64LittleEndian(header.AsSpan(0, sizeof(long)));
+            if (sequence <= newestSequence) continue;
+            newestSequence = sequence;
+            newestSlot = slot;
+            newestLength = BinaryPrimitives.ReadInt32LittleEndian(
+                header.AsSpan(8, sizeof(int)));
+        }
+        Assert.InRange(newestSlot, 0, 1);
+        Assert.InRange(newestLength, 1, slotBytes - headerBytes);
+        var payload = new byte[newestLength];
+        stream.Position = (long)newestSlot * slotBytes + headerBytes;
+        stream.ReadExactly(payload);
+        return payload;
+    }
+
     private static string[] SnapshotTree(string root) =>
         Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
             .Select(path =>
@@ -2171,6 +2199,26 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
                 $"checkpoint '{checkpoint}' was absent or out of order: {string.Join(", ", trace)}");
             previous = index;
         }
+    }
+
+    private static void AssertAccessDenied(Action mutation)
+    {
+        var error = Record.Exception(mutation);
+        Assert.True(
+            error is IOException or UnauthorizedAccessException,
+            $"Expected an OS access refusal, got {error?.GetType().FullName ?? "no exception"}: {error?.Message}");
+    }
+
+    private static byte[] GetAcl(string path)
+    {
+        FileSystemSecurity security = Directory.Exists(path)
+            ? FileSystemAclExtensions.GetAccessControl(
+                new DirectoryInfo(path),
+                AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access)
+            : FileSystemAclExtensions.GetAccessControl(
+                new FileInfo(path),
+                AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
+        return security.GetSecurityDescriptorBinaryForm();
     }
 
     private sealed record MembershipRaceWorkerResult(

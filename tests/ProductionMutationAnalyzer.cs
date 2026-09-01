@@ -45,7 +45,7 @@ internal static class ProductionMutationAnalyzer
     private static readonly HashSet<string> NativeMutationCalls = new(StringComparer.Ordinal)
     {
         "AssignProcessToJobObject", "CreateJobObjectW", "CreateProcessW", "SetInformationJobObject",
-        "SetKernelObjectSecurity", "NtCreateFile", "NtSetInformationFile", "SetFileInformationByHandle",
+        "SetKernelObjectSecurity", "SetSecurityInfo", "NtCreateFile", "NtSetInformationFile", "SetFileInformationByHandle",
         "SetFileInformationByHandleBuffer",
     };
 

@@ -41,6 +41,8 @@ internal static partial class LocalExactSetDeployment
         [JsonPropertyName("expected_files")] public List<DeployJournalFile> ExpectedFiles { get; set; } = new();
         [JsonPropertyName("staged_files")] public List<DeployJournalFile> StagedFiles { get; set; } = new();
         [JsonPropertyName("pending_file")] public DeployPendingFile? PendingFile { get; set; }
+        [JsonPropertyName("parent_membership_seal")] public DeployMembershipSeal? ParentMembershipSeal { get; set; }
+        [JsonPropertyName("target_membership_seal")] public DeployMembershipSeal? TargetMembershipSeal { get; set; }
 
         internal static DeployJournal Create(
             TransactionIdentity owner,
@@ -79,6 +81,39 @@ internal static partial class LocalExactSetDeployment
             PriorFiles = FromSnapshot(prior),
             ExpectedFiles = FromOutputs(expected),
         };
+    }
+
+    private sealed class DeployMembershipSeal
+    {
+        [JsonPropertyName("path")] public string Path { get; set; } = "";
+        [JsonPropertyName("volume_serial_number")] public ulong VolumeSerialNumber { get; set; }
+        [JsonPropertyName("file_id_low")] public ulong FileIdLow { get; set; }
+        [JsonPropertyName("file_id_high")] public ulong FileIdHigh { get; set; }
+        [JsonPropertyName("original_descriptor")] public string OriginalDescriptor { get; set; } = "";
+        [JsonPropertyName("sealed_descriptor")] public string SealedDescriptor { get; set; } = "";
+        [JsonPropertyName("denied_rights")] public int DeniedRights { get; set; }
+
+        internal static DeployMembershipSeal From(
+            LocalExactSetMembershipSeal.SecurityPlan plan) => new()
+        {
+            Path = plan.Path,
+            VolumeSerialNumber = plan.VolumeSerialNumber,
+            FileIdLow = plan.FileIdLow,
+            FileIdHigh = plan.FileIdHigh,
+            OriginalDescriptor = plan.OriginalDescriptor,
+            SealedDescriptor = plan.SealedDescriptor,
+            DeniedRights = plan.DeniedRights,
+        };
+
+        internal LocalExactSetMembershipSeal.SecurityPlan ToPlan() =>
+            LocalExactSetMembershipSeal.ValidatePlan(new(
+                Path,
+                VolumeSerialNumber,
+                FileIdLow,
+                FileIdHigh,
+                OriginalDescriptor,
+                SealedDescriptor,
+                DeniedRights));
     }
 
     private sealed class DeployDirectoryIdentity

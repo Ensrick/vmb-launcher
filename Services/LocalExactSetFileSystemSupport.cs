@@ -6,6 +6,9 @@ namespace VmbLauncher.Services;
 
 internal static partial class LocalExactSetDeployment
 {
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static Func<string, string>? FileSystemNameForTest;
+#endif
     /// <summary>
     /// The exact-set transaction is intentionally gated to NTFS until the full
     /// FILE_ID_INFO, rename, delete-disposition, and notification protocol has
@@ -13,8 +16,18 @@ internal static partial class LocalExactSetDeployment
     /// deploy restriction; callers invoke it only after exact journal/receipt
     /// ownership is established.
     /// </summary>
-    private static void RequireSupportedExactSetFileSystem(string path, string context)
+    internal static void RequireSupportedExactSetFileSystem(string path, string context)
     {
+#if VMBLAUNCHER_TEST_HOOKS
+        if (FileSystemNameForTest != null)
+        {
+            var planted = FileSystemNameForTest(Normalize(path));
+            if (!string.Equals(planted, "NTFS", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"Receipt-authority exact-set {context} requires NTFS; '{planted}' is not yet supported.");
+            return;
+        }
+#endif
         var volumePath = new StringBuilder(1024);
         if (!GetVolumePathNameW(Normalize(path), volumePath, volumePath.Capacity))
             throw new IOException(

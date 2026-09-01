@@ -18,7 +18,7 @@ internal static partial class LocalExactSetDeployment
 #if VMBLAUNCHER_TEST_HOOKS
     internal static Action<string>? TransitionForTest;
 #endif
-    private const int JournalSchema = 4;
+    private const int JournalSchema = 5;
     private const int MaximumManagedFiles = 4096;
     private const long MaximumManagedBytes = 32L * 1024 * 1024 * 1024;
     private const int MaximumWorkshopJournals = 4096;
@@ -95,6 +95,8 @@ internal static partial class LocalExactSetDeployment
             ExactDirectorySnapshot? prior = null;
             DeployJournal? journal = null;
             TransactionPaths? paths = null;
+            LocalExactSetMembershipSeal? parentMembershipSeal = null;
+            LocalExactSetMembershipSeal? targetMembershipSeal = null;
             try
             {
                 priorLease = ExactDirectoryLease.OpenExisting(
@@ -307,10 +309,59 @@ internal static partial class LocalExactSetDeployment
                 WriteJournal(paths.Journal, journal, replace: true, parentLease);
                 Checkpoint("target-verified");
                 deployedProof.RequireCurrentNamespace(stageLease, "verified deployed target");
+
+                // Record both exact ACL transitions before either DACL is
+                // mutated. The parent seal denies replacement of the target
+                // directory; the target seal denies membership insertion and
+                // removal. Existing leaf proof handles continue to pin every
+                // authenticated output. Together these are the OS-enforced
+                // authority across the final proof -> durable commit window.
+                parentMembershipSeal = LocalExactSetMembershipSeal.Prepare(
+                    paths.Parent,
+                    parentIdentity);
+                targetMembershipSeal = LocalExactSetMembershipSeal.Prepare(
+                    paths.Target,
+                    new PhysicalDirectoryIdentity(
+                        stageLease.Identity.VolumeSerialNumber,
+                        stageLease.Identity.FileIdLow,
+                        stageLease.Identity.FileIdHigh,
+                        paths.Target));
+                journal.ParentMembershipSeal = DeployMembershipSeal.From(
+                    parentMembershipSeal.Plan);
+                journal.TargetMembershipSeal = DeployMembershipSeal.From(
+                    targetMembershipSeal.Plan);
+                WriteJournal(paths.Journal, journal, replace: true, parentLease);
+                Checkpoint("membership-seals-planned");
+                parentMembershipSeal.Apply();
+                Checkpoint("parent-membership-seal-applied");
+                targetMembershipSeal.Apply();
+                Checkpoint("membership-seals-applied");
+                parentMembershipSeal.RequireApplied();
+                targetMembershipSeal.RequireApplied();
+                deployedProof.RequireCurrentNamespace(stageLease, "sealed deployed target");
                 journal.State = "cleanup";
                 WriteJournal(paths.Journal, journal, replace: true, parentLease);
                 Checkpoint("cleanup-durable");
                 deployedProof.RequireCurrentNamespace(stageLease, "cleanup deployed target");
+
+                // cleanup is the sole durable commit boundary. After it is
+                // durable, later namespace activity is postcommit. Restore the
+                // exact captured ACLs before deleting the backup or retiring
+                // the journal so a crash never strands an unjournaled seal.
+                targetMembershipSeal.Restore();
+                Checkpoint("target-membership-seal-restored-before-parent");
+                parentMembershipSeal.Restore();
+                Checkpoint("parent-membership-seal-restored-before-reproof");
+                // Parent DACL restoration must not propagate into the target.
+                // Recheck the still-open target and parent handles only after
+                // both restores have completed.
+                targetMembershipSeal.RequireOriginal();
+                parentMembershipSeal.RequireOriginal();
+                targetMembershipSeal.Dispose();
+                targetMembershipSeal = null;
+                parentMembershipSeal.Dispose();
+                parentMembershipSeal = null;
+                Checkpoint("membership-seals-restored");
                 backupProof.Dispose();
                 backupProof = null;
                 DeleteRemainingExactDirectory(
@@ -341,6 +392,26 @@ internal static partial class LocalExactSetDeployment
             catch (Exception failure)
             {
                 Exception? precommitCleanup = null;
+                Exception? membershipSealRestoration = null;
+                try
+                {
+                    targetMembershipSeal?.Restore();
+                    parentMembershipSeal?.Restore();
+                }
+                catch (Exception ex)
+                {
+                    membershipSealRestoration = ex;
+                }
+                finally
+                {
+                    // A failed exact restoration must leave the durable plan
+                    // and current ACL in place for authenticated recovery; do
+                    // not let Dispose retry and mask the primary disposition.
+                    targetMembershipSeal?.AbandonWithoutRestore();
+                    parentMembershipSeal?.AbandonWithoutRestore();
+                    targetMembershipSeal = null;
+                    parentMembershipSeal = null;
+                }
                 if (stageLease != null && journal?.StageIdentity == null)
                 {
                     try
@@ -367,6 +438,9 @@ internal static partial class LocalExactSetDeployment
                 stageLease = null;
                 priorLease?.Dispose();
                 priorLease = null;
+                if (membershipSealRestoration != null)
+                    return new(false,
+                        $"Receipt-authority local deploy stopped safely because its exact membership ACL could not be restored: {membershipSealRestoration.Message}. The durable journal was preserved for authenticated recovery.");
                 if (journal?.State == "cleanup" &&
                     paths != null &&
                     IsExactDurableJournalVersion(paths.Journal, journal))
@@ -431,6 +505,8 @@ internal static partial class LocalExactSetDeployment
             }
             finally
             {
+                targetMembershipSeal?.Dispose();
+                parentMembershipSeal?.Dispose();
                 stageProof?.Dispose();
                 priorProof?.Dispose();
                 backupProof?.Dispose();
@@ -520,6 +596,9 @@ internal static partial class LocalExactSetDeployment
         VerifiedCommitQualifiedExpectedSet? authorization)
     {
         var paths = locator.FromJournal(journal);
+        if (journal.Schema == 4)
+            throw new InvalidDataException(
+                "Pre-release receipt-deploy schema-4 journal predates the NTFS membership-seal authority and is preserved without recovery mutation.");
         var current = MachineTransactionLease.CurrentIdentity
             ?? throw new InvalidOperationException("Receipt deploy recovery has no transaction identity.");
         var prior = ToOutputs(journal.PriorFiles);
@@ -597,6 +676,11 @@ internal static partial class LocalExactSetDeployment
             throw new InvalidDataException("Interrupted receipt-deploy journal lacks its prior identity/set.");
         var priorIdentity = journal.PriorIdentity.ToPhysical(locator.Target);
         var stageIdentity = journal.StageIdentity?.ToPhysical(paths.Stage);
+        ValidateMembershipSealPlans(
+            journal,
+            paths,
+            journal.ParentIdentity.ToPhysical(paths.Parent),
+            journal.StageIdentity?.ToPhysical(paths.Target));
         return new RecoveryContext(
             locator,
             paths,
@@ -641,6 +725,11 @@ internal static partial class LocalExactSetDeployment
                 new InvalidDataException(
                     "Interrupted mixed-prior reconstruction resumed from its durable journal."));
         }
+        RestoreRecordedMembershipSeals(
+            journal,
+            paths,
+            journal.ParentIdentity.ToPhysical(paths.Parent),
+            journal.StageIdentity?.ToPhysical(paths.Target));
         var targetExists = Directory.Exists(paths.Target);
         var backupExists = Directory.Exists(paths.Backup);
         var stageExists = Directory.Exists(paths.Stage);
@@ -1040,6 +1129,91 @@ internal static partial class LocalExactSetDeployment
         var match = expected.SingleOrDefault(file => file.Name == pending.CanonicalName);
         if (match == null || match.Length != pending.Length || match.Sha256 != pending.Sha256)
             throw new InvalidDataException("Pending stage-file proof differs from the expected set.");
+    }
+
+    private static void ValidateMembershipSealPlans(
+        DeployJournal journal,
+        TransactionPaths paths,
+        PhysicalDirectoryIdentity parentIdentity,
+        PhysicalDirectoryIdentity? targetIdentity)
+    {
+        var hasParent = journal.ParentMembershipSeal != null;
+        var hasTarget = journal.TargetMembershipSeal != null;
+        if (hasParent != hasTarget)
+            throw new InvalidDataException(
+                "Receipt-deploy journal has an incomplete membership-seal plan pair.");
+        if (!hasParent)
+        {
+            if (journal.State == "cleanup")
+                throw new InvalidDataException(
+                    "Committed receipt-deploy journal lacks its membership-seal authority.");
+            return;
+        }
+        if (journal.State is not ("verified" or "cleanup" or "rollback_cleanup" or "manual_review"))
+            throw new InvalidDataException(
+                "Receipt-deploy journal carries membership-seal plans before the verified boundary.");
+        if (targetIdentity == null)
+            throw new InvalidDataException(
+                "Receipt-deploy membership-seal plan lacks its replacement identity.");
+
+        var parentPlan = journal.ParentMembershipSeal!.ToPlan();
+        var targetPlan = journal.TargetMembershipSeal!.ToPlan();
+        if (parentPlan.DeniedRights !=
+                checked((int)LocalExactSetMembershipSeal.NamespaceDeniedRights) ||
+            targetPlan.DeniedRights !=
+                checked((int)LocalExactSetMembershipSeal.NamespaceDeniedRights) ||
+            !parentPlan.ToIdentity().SameObject(parentIdentity) ||
+            !targetPlan.ToIdentity().SameObject(targetIdentity) ||
+            !string.Equals(
+                Normalize(parentPlan.Path),
+                paths.Parent,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                Normalize(targetPlan.Path),
+                paths.Target,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                "Receipt-deploy membership-seal plans do not match the exact journal identities and paths.");
+    }
+
+    private static void RestoreRecordedMembershipSeals(
+        DeployJournal journal,
+        TransactionPaths paths,
+        PhysicalDirectoryIdentity parentIdentity,
+        PhysicalDirectoryIdentity? targetIdentity)
+    {
+        ValidateMembershipSealPlans(journal, paths, parentIdentity, targetIdentity);
+        if (journal.ParentMembershipSeal == null) return;
+
+        LocalExactSetMembershipSeal? parent = null;
+        LocalExactSetMembershipSeal? target = null;
+        try
+        {
+            parent = LocalExactSetMembershipSeal.Resume(
+                journal.ParentMembershipSeal.ToPlan(),
+                parentIdentity);
+            target = LocalExactSetMembershipSeal.Resume(
+                journal.TargetMembershipSeal!.ToPlan(),
+                targetIdentity!);
+            target.Restore();
+            parent.Restore();
+            target.RequireOriginal();
+            parent.RequireOriginal();
+            Checkpoint("membership-seals-restored-recovery");
+        }
+        catch
+        {
+            target?.AbandonWithoutRestore();
+            parent?.AbandonWithoutRestore();
+            target = null;
+            parent = null;
+            throw;
+        }
+        finally
+        {
+            target?.Dispose();
+            parent?.Dispose();
+        }
     }
 
     private static void NormalizeRecordedStage(

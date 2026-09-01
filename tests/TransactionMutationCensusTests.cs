@@ -194,8 +194,8 @@ public class TransactionMutationCensusTests
             // covered by identity/hash/recovery adversarial tests.
             "Services/ImmutableBundleSourceLease.cs:102:30:1:new FileStream",
             "Services/ImmutableBundleSourceLease.cs:158:13:1:stream.Write",
-            "Services/LocalExactSetDeployment.cs:148:40:1:new FileStream",
-            "Services/LocalExactSetDeployment.cs:176:21:1:stream.Flush",
+            "Services/LocalExactSetDeployment.cs:150:40:1:new FileStream",
+            "Services/LocalExactSetDeployment.cs:178:21:1:stream.Flush",
             "Services/LocalExactSetFileSystem.cs:118:22:1:new FileStream",
             "Services/LocalExactSetFileSystem.cs:170:14:1:SetFileInformationByHandle",
             "Services/LocalExactSetFileSystem.cs:223:30:1:NtSetInformationFile",
@@ -211,6 +211,10 @@ public class TransactionMutationCensusTests
             "Services/LocalExactSetJournal.cs:214:9:1:stream.Write",
             "Services/LocalExactSetJournal.cs:215:9:1:stream.Flush",
             "Services/LocalExactSetJournal.cs:326:20:1:new FileStream",
+            // Handle-bound NTFS DACL mutation is journal-planned before use,
+            // exact-state checked after use, machine-lease guarded, and
+            // covered by crash/foreign-drift/independent-process tests.
+            "Services/LocalExactSetMembershipSeal.cs:343:25:1:SetSecurityInfo",
             "Services/LocalExactSetNamespace.cs:104:30:1:NtCreateFile",
             "Services/LocalExactSetNamespace.cs:230:26:1:NtCreateFile",
             "Services/LocalExactSetNamespace.cs:295:34:1:new FileStream",
@@ -295,7 +299,7 @@ public class TransactionMutationCensusTests
             "Services/VmbDownloader.cs:134:25:1:File API",
             "Services/VmbDownloader.cs:141:19:1:stream.Write",
         };
-        Assert.Equal(106, expected.Count);
+        Assert.Equal(107, expected.Count);
 
         Assert.True(expected.SetEquals(actual),
             "Production filesystem/process/job/ACL census drifted.\n" +
