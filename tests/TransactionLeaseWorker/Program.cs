@@ -14,7 +14,17 @@ var marker = Arg(args, 4);
 var release = args.Length > 5 ? args[5] : "";
 var timeoutMs = args.Length > 6 ? int.Parse(args[6]) : 2000;
 
-if (mode == "receipt-deploy-membership-race")
+if (mode == "receipt-deploy-foreign-write")
+{
+    var path = Arg(args, 7);
+    var contents = Arg(args, 8);
+    File.WriteAllText(path, contents);
+    WriteAtomicText(marker, $"{Environment.ProcessId}|{path}");
+    return 0;
+}
+
+if (mode is "receipt-deploy-membership-race" or
+    "receipt-deploy-rollback-membership-race")
 {
     const string mod = "modx";
     const string publishedId = "123456789";
@@ -44,9 +54,20 @@ if (mode == "receipt-deploy-membership-race")
         expected);
     var trace = new List<string>();
     var gated = false;
+    var rollbackArmed = mode == "receipt-deploy-membership-race";
     LocalExactSetDeployment.TransitionForTest = point =>
     {
         trace.Add(point);
+        if (!rollbackArmed)
+        {
+            if (point == "membership-seals-applied")
+            {
+                rollbackArmed = true;
+                throw new IOException(
+                    "planted ordinary failure after membership seals for rollback");
+            }
+            return;
+        }
         if (gated || point != checkpoint) return;
         gated = true;
         WriteAtomicText(marker, $"{Environment.ProcessId}|{point}");
@@ -74,7 +95,9 @@ if (mode == "receipt-deploy-membership-race")
         result.Message,
         Trace = trace.ToArray(),
     });
-    return result.Ok ? 0 : 93;
+    return mode == "receipt-deploy-membership-race"
+        ? result.Ok ? 0 : 93
+        : result.Ok ? 94 : 0;
 }
 
 if (mode is "receipt-deploy-owner-crash" or "receipt-deploy-rollback-owner-crash")

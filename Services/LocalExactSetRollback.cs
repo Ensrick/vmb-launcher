@@ -22,6 +22,7 @@ internal static partial class LocalExactSetDeployment
         ExactDirectorySnapshotLease? priorProof = null;
         ExactDirectorySnapshotLease? replacementProof = null;
         ExactJournalLease? journalLease = null;
+        Exception? preservedReplacementFailure = null;
         try
         {
             journalLease = existingJournalLease ?? ExactJournalLease.Open(
@@ -60,6 +61,25 @@ internal static partial class LocalExactSetDeployment
                             modName,
                             requireExactOwner: true);
                         RequireExact(replacementProof.Snapshot.Files, expected, "rollback replacement");
+                        Checkpoint("rollback-replacement-pinned");
+                        replacementProof.Dispose();
+                        replacementProof = null;
+                        stageLease.RenameTo(
+                            parentLease,
+                            paths.Stage,
+                            "rollback replacement stage");
+                        replacementProof = ExactDirectorySnapshotLease.Capture(
+                            stageLease,
+                            modName,
+                            requireExactOwner: true);
+                        RequireExact(
+                            replacementProof.Snapshot.Files,
+                            expected,
+                            "rollback replacement stage");
+                    }
+                    catch (Exception ex) when (BypassesAutomaticRecovery(ex))
+                    {
+                        throw;
                     }
                     catch (Exception membershipFailure)
                     {
@@ -74,39 +94,8 @@ internal static partial class LocalExactSetDeployment
                             stageIdentity,
                             "mixed replacement quarantine");
                         Checkpoint("rollback-replacement-quarantined");
-                        priorProof.Dispose();
-                        priorProof = null;
-                        priorLease.RenameTo(
-                            parentLease,
-                            paths.Target,
-                            "quarantine rollback restored target");
-                        priorProof = ExactDirectorySnapshotLease.Capture(
-                            priorLease,
-                            modName,
-                            requireExactOwner: true);
-                        RequireExact(
-                            priorProof.Snapshot.Files,
-                            prior.Files,
-                            "quarantine rollback restored target");
-                        priorProof.RequireCurrentNamespace(
-                            priorLease,
-                            "quarantine rollback restored target");
-                        throw new InvalidDataException(
-                            "Mixed replacement was preserved in its journal-bound quarantine and the exact prior deployment was restored; manual review is required.",
-                            membershipFailure);
+                        preservedReplacementFailure = membershipFailure;
                     }
-                    Checkpoint("rollback-replacement-pinned");
-                    replacementProof.Dispose();
-                    replacementProof = null;
-                    stageLease.RenameTo(
-                        parentLease,
-                        paths.Stage,
-                        "rollback replacement stage");
-                    replacementProof = ExactDirectorySnapshotLease.Capture(
-                        stageLease,
-                        modName,
-                        requireExactOwner: true);
-                    RequireExact(replacementProof.Snapshot.Files, expected, "rollback replacement stage");
                 }
                 Checkpoint("rollback-backup-pinned");
                 priorProof.Dispose();
@@ -121,6 +110,16 @@ internal static partial class LocalExactSetDeployment
                     requireExactOwner: true);
                 RequireExact(priorProof.Snapshot.Files, prior.Files, "rollback restored target");
                 priorProof.RequireCurrentNamespace(priorLease, "rollback restored target");
+                if (preservedReplacementFailure != null)
+                    throw DurableManualReviewAfterPriorRestored(
+                        paths,
+                        journal,
+                        parentLease,
+                        journalLease,
+                        priorLease,
+                        priorProof,
+                        prior.Files,
+                        preservedReplacementFailure);
             }
             if (priorLease == null)
             {
@@ -160,12 +159,19 @@ internal static partial class LocalExactSetDeployment
                 replacementProof = null;
                 if (journal.State != "rollback_cleanup")
                 {
-                    NormalizeRecordedStage(
-                        stageLease,
+                    paths = NormalizeOrQuarantineRecordedStage(
+                        paths,
                         journal,
                         staged,
-                        journal.StagedFiles,
-                        expected);
+                        expected,
+                        parentLease,
+                        journalLease,
+                        stageLease,
+                        stageIdentity,
+                        priorLease,
+                        priorProof!,
+                        prior.Files,
+                        "mixed rollback stage quarantine");
                     journal.State = "rollback_cleanup";
                     WriteJournal(
                         paths.Journal,
@@ -195,6 +201,10 @@ internal static partial class LocalExactSetDeployment
                     prior.Files,
                     "rollback final prior target");
             return null;
+        }
+        catch (Exception ex) when (BypassesAutomaticRecovery(ex))
+        {
+            throw;
         }
         catch (Exception ex)
         {

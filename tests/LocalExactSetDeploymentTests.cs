@@ -536,7 +536,9 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
 
         Assert.False(recovery.Ok);
         Assert.Contains("Unidentified", recovery.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("substitute must survive", File.ReadAllText(temp));
+        Assert.Equal(
+            "substitute must survive",
+            File.ReadAllText(FindQuarantinedLeaf(fixture.Parent, temp)));
         fixture.AssertTarget(fixture.Prior);
     }
 
@@ -815,6 +817,205 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             path => Path.GetFileName(path).StartsWith(
                 $".vmblauncher-receipt-deploy-{PublishedId}",
                 StringComparison.Ordinal));
+        Assert.False(File.Exists(record));
+        Assert.False(Directory.Exists(source));
+    }
+
+    [Fact]
+    public void IndependentProcessInsertionDuringLiveRollback_IsQuarantinedAfterPriorRestoration()
+    {
+        using var temp = new TempDir();
+        using var restrictiveGrandparent = DenyDeleteChildAndRestore(temp.Path);
+        var source = temp.CreateSubdir("source");
+        var parent = temp.CreateSubdir("workshop");
+        var target = temp.CreateSubdir(Path.Combine("workshop", PublishedId));
+        File.WriteAllText(Path.Combine(source, Mod + ".mod"), "new descriptor");
+        File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
+        File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
+        File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
+        var prior = Census(target);
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var priorDescriptorAcl = GetAcl(Path.Combine(target, Mod + ".mod"));
+        var priorBundleAcl = GetAcl(Path.Combine(target, OldBundle));
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
+        var worker = FindTransactionWorker();
+        var mutex = @"Local\VMBLauncher.Tests.ReceiptLiveRollbackRace." +
+            Guid.NewGuid().ToString("N");
+        var record = Path.Combine(temp.Path, "owner.json");
+        var ready = Path.Combine(temp.Path, "rollback.ready");
+        var release = Path.Combine(temp.Path, "rollback.release");
+        var resultPath = Path.Combine(temp.Path, "rollback.result.json");
+
+        using var owner = StartTransactionWorker(
+            worker,
+            "receipt-deploy-rollback-membership-race",
+            mutex,
+            record,
+            temp.Path,
+            ready,
+            release,
+            "20000",
+            "rollback-replacement-pinned",
+            resultPath);
+        WaitForWorkerMarker(ready, owner);
+        var ownerPid = int.Parse(File.ReadAllText(ready).Split('|')[0]);
+        Assert.Equal(owner.Id, ownerPid);
+        Assert.NotEqual(Environment.ProcessId, ownerPid);
+
+        var foreignPath = Path.Combine(target, "human-owned.txt");
+        var foreignMarker = Path.Combine(temp.Path, "foreign.result");
+        using (var foreign = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-foreign-write",
+                   mutex,
+                   record,
+                   temp.Path,
+                   foreignMarker,
+                   release: "",
+                   timeoutMs: "5000",
+                   foreignPath,
+                   "preserve me"))
+        {
+            Assert.True(foreign.WaitForExit(10_000), "foreign insertion worker did not exit");
+            Assert.Equal(0, foreign.ExitCode);
+            var foreignPid = int.Parse(File.ReadAllText(foreignMarker).Split('|')[0]);
+            Assert.Equal(foreign.Id, foreignPid);
+            Assert.NotEqual(ownerPid, foreignPid);
+            Assert.NotEqual(Environment.ProcessId, foreignPid);
+        }
+        File.WriteAllText(release, "release");
+        Assert.True(owner.WaitForExit(30_000), "live rollback worker did not exit");
+        var stderr = owner.StandardError.ReadToEnd();
+        Assert.True(
+            File.Exists(resultPath),
+            $"live rollback worker produced no result (exit {owner.ExitCode}): {stderr}");
+        var ownerResult = JsonSerializer.Deserialize<MembershipRaceWorkerResult>(
+            File.ReadAllText(resultPath));
+        Assert.NotNull(ownerResult);
+        Assert.False(ownerResult.Ok);
+        Assert.Contains("manual review", ownerResult.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, owner.ExitCode);
+
+        AssertManualReviewRollbackState(
+            parent,
+            target,
+            prior,
+            "preserve me",
+            parentAcl,
+            targetAcl,
+            priorDescriptorAcl,
+            priorBundleAcl,
+            siblingDirectory,
+            siblingFile,
+            siblingDirectoryAcl,
+            siblingFileAcl);
+        Assert.False(File.Exists(record));
+    }
+
+    [Fact]
+    public void IndependentProcessInsertionIntoCrashedRollbackStage_RestoresPriorAndQuarantinesStage()
+    {
+        using var temp = new TempDir();
+        using var restrictiveGrandparent = DenyDeleteChildAndRestore(temp.Path);
+        var source = temp.CreateSubdir("source");
+        var parent = temp.CreateSubdir("workshop");
+        var target = temp.CreateSubdir(Path.Combine("workshop", PublishedId));
+        File.WriteAllText(Path.Combine(source, Mod + ".mod"), "new descriptor");
+        File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
+        File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
+        File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
+        var prior = Census(target);
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var priorDescriptorAcl = GetAcl(Path.Combine(target, Mod + ".mod"));
+        var priorBundleAcl = GetAcl(Path.Combine(target, OldBundle));
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
+        var worker = FindTransactionWorker();
+        var mutex = @"Local\VMBLauncher.Tests.ReceiptCrashStageRace." +
+            Guid.NewGuid().ToString("N");
+        var record = Path.Combine(temp.Path, "owner.json");
+        var crashMarker = Path.Combine(temp.Path, "crashed.txt");
+
+        int crashPid;
+        using (var crash = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-rollback-owner-crash",
+                   mutex,
+                   record,
+                   temp.Path,
+                   crashMarker,
+                   "rollback-backup-pinned"))
+        {
+            crashPid = crash.Id;
+            WaitForWorkerMarker(crashMarker, crash);
+            Assert.True(crash.WaitForExit(30_000), "rollback crash worker did not exit");
+            Assert.NotEqual(0, crash.ExitCode);
+        }
+        var stage = Assert.Single(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.stage"));
+        Assert.False(Directory.Exists(target));
+        var foreignPath = Path.Combine(stage, "human-owned.txt");
+        var foreignMarker = Path.Combine(temp.Path, "foreign.result");
+        using (var foreign = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-foreign-write",
+                   mutex,
+                   record,
+                   temp.Path,
+                   foreignMarker,
+                   release: "",
+                   timeoutMs: "5000",
+                   foreignPath,
+                   "preserve me"))
+        {
+            Assert.True(foreign.WaitForExit(10_000), "foreign stage worker did not exit");
+            Assert.Equal(0, foreign.ExitCode);
+            var foreignPid = int.Parse(File.ReadAllText(foreignMarker).Split('|')[0]);
+            Assert.Equal(foreign.Id, foreignPid);
+            Assert.NotEqual(crashPid, foreignPid);
+            Assert.NotEqual(Environment.ProcessId, foreignPid);
+        }
+        Directory.Delete(source, recursive: true);
+
+        var recoveryMarker = Path.Combine(temp.Path, "recovered.txt");
+        using (var recovery = StartTransactionWorker(
+                   worker,
+                   "receipt-deploy-recover",
+                   mutex,
+                   record,
+                   temp.Path,
+                   recoveryMarker,
+                   release: "",
+                   timeoutMs: "20000"))
+        {
+            Assert.NotEqual(crashPid, recovery.Id);
+            WaitForWorkerMarker(recoveryMarker, recovery);
+            Assert.True(recovery.WaitForExit(30_000), "rollback recovery worker did not exit");
+            Assert.Equal(92, recovery.ExitCode);
+            Assert.StartsWith("False|", File.ReadAllText(recoveryMarker), StringComparison.Ordinal);
+        }
+
+        AssertManualReviewRollbackState(
+            parent,
+            target,
+            prior,
+            "preserve me",
+            parentAcl,
+            targetAcl,
+            priorDescriptorAcl,
+            priorBundleAcl,
+            siblingDirectory,
+            siblingFile,
+            siblingDirectoryAcl,
+            siblingFileAcl);
         Assert.False(File.Exists(record));
         Assert.False(Directory.Exists(source));
     }
@@ -1867,7 +2068,14 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
 
         Assert.False(result.Ok);
         Assert.NotNull(planted);
-        Assert.True(nested ? Directory.Exists(planted) : File.Exists(planted));
+        var quarantine = Assert.Single(Directory.EnumerateDirectories(
+            fixture.Parent,
+            ".vmblauncher-receipt-deploy-*.quarantine*"));
+        var preserved = Path.Combine(quarantine, Path.GetFileName(planted));
+        Assert.True(nested ? Directory.Exists(preserved) : File.Exists(preserved));
+        Assert.Single(Directory.EnumerateFiles(
+            fixture.Parent,
+            ".vmblauncher-receipt-deploy-*.journal.json"));
         fixture.AssertTarget(fixture.Prior);
         Assert.False(File.Exists(Path.Combine(fixture.Target, NewBundle)));
     }
@@ -1893,7 +2101,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
 
         Assert.False(recovery.Ok);
         Assert.Contains("identity", recovery.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(bytes, File.ReadAllBytes(pending));
+        Assert.Equal(bytes, File.ReadAllBytes(FindQuarantinedLeaf(fixture.Parent, pending)));
         fixture.AssertTarget(fixture.Prior);
     }
 
@@ -1915,7 +2123,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
 
         Assert.False(recovery.Ok);
         Assert.Contains("identity", recovery.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(bytes, File.ReadAllBytes(completed));
+        Assert.Equal(bytes, File.ReadAllBytes(FindQuarantinedLeaf(fixture.Parent, completed)));
         fixture.AssertTarget(fixture.Prior);
     }
 
@@ -2384,6 +2592,71 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
                 $"checkpoint '{checkpoint}' was absent or out of order: {string.Join(", ", trace)}");
             previous = index;
         }
+    }
+
+    private static void AssertManualReviewRollbackState(
+        string parent,
+        string target,
+        IReadOnlyList<CommitQualifiedOutputFile> prior,
+        string foreignContents,
+        byte[] parentAcl,
+        byte[] targetAcl,
+        byte[] priorDescriptorAcl,
+        byte[] priorBundleAcl,
+        string siblingDirectory,
+        string siblingFile,
+        byte[] siblingDirectoryAcl,
+        byte[] siblingFileAcl)
+    {
+        Assert.Equal(prior, Census(target));
+        var quarantine = Assert.Single(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.quarantine*"));
+        Assert.Equal(
+            foreignContents,
+            File.ReadAllText(Path.Combine(quarantine, "human-owned.txt")));
+        Assert.Single(Directory.EnumerateFiles(
+            parent,
+            ".vmblauncher-receipt-deploy-*.journal.json"));
+        Assert.Empty(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.stage"));
+        Assert.Empty(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.backup"));
+        Assert.Empty(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.restore*"));
+        Assert.Equal(parentAcl, GetAcl(parent));
+        Assert.Equal(targetAcl, GetAcl(target));
+        Assert.Equal(priorDescriptorAcl, GetAcl(Path.Combine(target, Mod + ".mod")));
+        Assert.Equal(priorBundleAcl, GetAcl(Path.Combine(target, OldBundle)));
+        Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+        Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
+
+        var artifactEntries = Directory.EnumerateFileSystemEntries(parent)
+            .Select(Path.GetFileName)
+            .Where(name => name!.StartsWith(
+                $".vmblauncher-receipt-deploy-{PublishedId}",
+                StringComparison.Ordinal))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(2, artifactEntries.Length);
+        Assert.Contains(artifactEntries, name => name!.Contains(".quarantine", StringComparison.Ordinal));
+        Assert.Contains(artifactEntries, name => name!.EndsWith(".journal.json", StringComparison.Ordinal));
+    }
+
+    private static string FindQuarantinedLeaf(string parent, string originalPath)
+    {
+        var quarantine = Assert.Single(Directory.EnumerateDirectories(
+            parent,
+            ".vmblauncher-receipt-deploy-*.quarantine*"));
+        var preserved = Path.Combine(quarantine, Path.GetFileName(originalPath));
+        Assert.True(File.Exists(preserved), $"quarantined leaf missing: {preserved}");
+        Assert.Single(Directory.EnumerateFiles(
+            parent,
+            ".vmblauncher-receipt-deploy-*.journal.json"));
+        return preserved;
     }
 
     private static void AssertAccessDenied(Action mutation)

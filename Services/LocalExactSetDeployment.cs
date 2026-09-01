@@ -882,25 +882,13 @@ internal static partial class LocalExactSetDeployment
                 priorIdentity,
                 stageIdentity,
                 parentLease,
+                journalLease,
                 targetExists,
                 backupExists);
         }
         if (stageExists && stageIdentity == null)
             throw new InvalidDataException(
                 "Unidentified precommitted stage is preserved; its name or emptiness is not deletion authority.");
-        else if (stageExists && stageIdentity != null && journal.State != "rollback_cleanup")
-        {
-            stageLease = ExactDirectoryLease.OpenExisting(
-                paths.Stage,
-                stageIdentity,
-                "recorded staging directory");
-            NormalizeRecordedStage(
-                stageLease,
-                journal,
-                stagedFiles,
-                journal.StagedFiles,
-                expected);
-        }
         if (journal.State == "cleanup")
         {
             if (!targetExists || stageExists || stageIdentity == null)
@@ -1013,8 +1001,14 @@ internal static partial class LocalExactSetDeployment
             priorTargetProof.RequireCurrentNamespace(priorTargetLease, "restored prior deployment");
             targetExists = true;
             if (preservedQuarantineFailure != null)
-                throw new InvalidDataException(
-                    "Interrupted mixed replacement was preserved in its journal-bound quarantine and the exact prior deployment was restored; manual review is required.",
+                throw DurableManualReviewAfterPriorRestored(
+                    paths,
+                    journal,
+                    parentLease,
+                    journalLease,
+                    priorTargetLease,
+                    priorTargetProof,
+                    prior,
                     preservedQuarantineFailure);
         }
 
@@ -1040,8 +1034,23 @@ internal static partial class LocalExactSetDeployment
                 paths.Stage,
                 stageIdentity,
                 "interrupted exact staging set");
+            replacementProof?.Dispose();
+            replacementProof = null;
             if (journal.State != "rollback_cleanup")
             {
+                paths = NormalizeOrQuarantineRecordedStage(
+                    paths,
+                    journal,
+                    stagedFiles,
+                    expected,
+                    parentLease,
+                    journalLease,
+                    stageLease,
+                    stageIdentity,
+                    priorTargetLease,
+                    priorTargetProof!,
+                    prior,
+                    "interrupted mixed stage quarantine");
                 journal.State = "rollback_cleanup";
                 WriteJournal(
                     paths.Journal,
@@ -1050,8 +1059,6 @@ internal static partial class LocalExactSetDeployment
                     parentLease,
                     journalLease);
             }
-            replacementProof?.Dispose();
-            replacementProof = null;
             DeleteRemainingExactDirectory(
                 stageLease,
                 stagedFiles,
@@ -1089,6 +1096,7 @@ internal static partial class LocalExactSetDeployment
         PhysicalDirectoryIdentity priorIdentity,
         PhysicalDirectoryIdentity? stageIdentity,
         ExactDirectoryLease parentLease,
+        ExactJournalLease journalLease,
         bool targetExists,
         bool backupExists)
     {
@@ -1127,6 +1135,16 @@ internal static partial class LocalExactSetDeployment
                 requireExactOwner: true);
             RequireExact(restored.Snapshot.Files, prior, "quarantine restored prior deployment");
             restored.RequireCurrentNamespace(priorLease, "quarantine restored prior deployment");
+            throw DurableManualReviewAfterPriorRestored(
+                paths,
+                journal,
+                parentLease,
+                journalLease,
+                priorLease,
+                restored,
+                prior,
+                new InvalidDataException(
+                    "Interrupted replacement membership differs from its exact recorded set."));
         }
         else
         {
@@ -1143,10 +1161,17 @@ internal static partial class LocalExactSetDeployment
                 requireExactOwner: true);
             RequireExact(priorProof.Snapshot.Files, prior, "quarantine restored prior target");
             priorProof.RequireCurrentNamespace(priorLease, "quarantine restored prior target");
+            throw DurableManualReviewAfterPriorRestored(
+                paths,
+                journal,
+                parentLease,
+                journalLease,
+                priorLease,
+                priorProof,
+                prior,
+                new InvalidDataException(
+                    "Interrupted replacement membership differs from its exact recorded set."));
         }
-
-        throw new InvalidDataException(
-            "A mixed replacement is preserved in its journal-bound quarantine; the exact prior deployment is restored, but manual review is required.");
     }
 
     private static void RefuseDirectoryPathImpersonation(

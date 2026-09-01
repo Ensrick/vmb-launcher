@@ -90,4 +90,102 @@ internal static partial class LocalExactSetDeployment
             requireExactOwner: false);
         RequireExact(normalized.Snapshot.Files, staged, "normalized staging directory");
     }
+
+    private static TransactionPaths NormalizeOrQuarantineRecordedStage(
+        TransactionPaths paths,
+        DeployJournal journal,
+        IReadOnlyList<CommitQualifiedOutputFile> staged,
+        IReadOnlyList<CommitQualifiedOutputFile> expected,
+        ExactDirectoryLease parentLease,
+        ExactJournalLease journalLease,
+        ExactDirectoryLease stageLease,
+        PhysicalDirectoryIdentity stageIdentity,
+        ExactDirectoryLease priorLease,
+        ExactDirectorySnapshotLease priorProof,
+        IReadOnlyList<CommitQualifiedOutputFile> prior,
+        string context)
+    {
+        try
+        {
+            NormalizeRecordedStage(
+                stageLease,
+                journal,
+                staged,
+                journal.StagedFiles,
+                expected);
+            return paths;
+        }
+        catch (Exception ex) when (BypassesAutomaticRecovery(ex))
+        {
+            throw;
+        }
+        catch (Exception membershipFailure)
+        {
+            paths = QuarantineRecordedReplacement(
+                paths,
+                journal,
+                parentLease,
+                journalLease,
+                stageLease,
+                stageIdentity,
+                context);
+            Checkpoint("rollback-stage-quarantined");
+            throw DurableManualReviewAfterPriorRestored(
+                paths,
+                journal,
+                parentLease,
+                journalLease,
+                priorLease,
+                priorProof,
+                prior,
+                membershipFailure);
+        }
+    }
+
+    private static InvalidDataException DurableManualReviewAfterPriorRestored(
+        TransactionPaths paths,
+        DeployJournal journal,
+        ExactDirectoryLease parentLease,
+        ExactJournalLease journalLease,
+        ExactDirectoryLease priorLease,
+        ExactDirectorySnapshotLease priorProof,
+        IReadOnlyList<CommitQualifiedOutputFile> prior,
+        Exception membershipFailure)
+    {
+        priorLease.RequireCurrentPath("manual-review restored prior target");
+        RequireExact(
+            priorProof.Snapshot.Files,
+            prior,
+            "manual-review restored prior target");
+        priorProof.RequireCurrentNamespace(
+            priorLease,
+            "manual-review restored prior target");
+        var staged = ToOutputs(journal.StagedFiles);
+        var expected = ToOutputs(journal.ExpectedFiles);
+        if (journal.PendingFile == null && MapEquals(staged, expected))
+        {
+            journal.State = "manual_review";
+            WriteJournal(
+                paths.Journal,
+                journal,
+                replace: true,
+                parentLease,
+                journalLease);
+        }
+        else
+        {
+            // Partial-stage states retain their exact original schema shape.
+            // The durable quarantine identity is itself the manual-review
+            // boundary; promoting an incomplete journal to manual_review
+            // would violate the committed-stage invariant on the next read.
+            journalLease.RequireVersion(
+                journal,
+                "partial-stage quarantine manual-review authority");
+        }
+        Checkpoint("mixed-replacement-manual-review-durable");
+        return new InvalidDataException(
+            "Mixed replacement was preserved in its journal-bound quarantine and the exact prior deployment was restored; manual review is required. " +
+            $"Membership proof failed: {membershipFailure.Message}",
+            membershipFailure);
+    }
 }
