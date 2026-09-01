@@ -65,6 +65,12 @@ internal static partial class LocalExactSetDeployment
                 throw new InvalidDataException(
                     "Multiple interrupted receipt-deploy journals claim the same mod; refusing ambiguous recovery.");
 
+            // Unsupported pre-release journals are read-only evidence. Refuse
+            // the whole discovered set before canonical-name restoration or
+            // any other recovery mutation can occur.
+            foreach (var item in journals)
+                RequireSupportedRecoverySchema(item.Journal);
+
             // Root identity and reserved-artifact constraints apply only after
             // a durable journal has proved an exact recovery owner.
             _ = ImmutableBundleSourceLease.InspectDirectory(parent);

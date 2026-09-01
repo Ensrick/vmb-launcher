@@ -578,6 +578,7 @@ internal static partial class LocalExactSetDeployment
             throw new InvalidDataException(
                 "Receipt-deploy journal namespace is ambiguous for this exact target.");
         var item = matches[0];
+        RequireSupportedRecoverySchema(item.Journal);
         RestoreCanonicalJournalName(item.Locator, item.Journal, item.SourcePath);
         RefuseJournalTemps(locator.Parent);
         var journal = ReadJournal(locator.Journal);
@@ -596,9 +597,7 @@ internal static partial class LocalExactSetDeployment
         VerifiedCommitQualifiedExpectedSet? authorization)
     {
         var paths = locator.FromJournal(journal);
-        if (journal.Schema == 4)
-            throw new InvalidDataException(
-                "Pre-release receipt-deploy schema-4 journal predates the NTFS membership-seal authority and is preserved without recovery mutation.");
+        RequireSupportedRecoverySchema(journal);
         var current = MachineTransactionLease.CurrentIdentity
             ?? throw new InvalidOperationException("Receipt deploy recovery has no transaction identity.");
         var prior = ToOutputs(journal.PriorFiles);
@@ -692,6 +691,13 @@ internal static partial class LocalExactSetDeployment
             stageIdentity);
     }
 
+    private static void RequireSupportedRecoverySchema(DeployJournal journal)
+    {
+        if (journal.Schema == JournalSchema) return;
+        throw new InvalidDataException(
+            $"Pre-release receipt-deploy schema-{journal.Schema} journal predates the NTFS membership-seal authority and is preserved without recovery mutation.");
+    }
+
     private static void RecoverValidatedJournal(
         RecoveryContext recovery,
         Action<string>? log)
@@ -703,13 +709,24 @@ internal static partial class LocalExactSetDeployment
         var stagedFiles = recovery.Staged;
         var priorIdentity = recovery.PriorIdentity;
         var stageIdentity = recovery.StageIdentity;
+        if (journal.State == "manual_review")
+            throw new InvalidDataException(
+                "Interrupted receipt-deploy journal requires manual review; no automatic mutation is authorized.");
+        // The parent membership seal denies DELETE while the interrupted
+        // transaction is authoritative. Restore both journaled seals before
+        // opening any DELETE-capable directory lease; relying on a permissive
+        // grandparent FILE_DELETE_CHILD grant makes crash recovery contingent
+        // on an unrelated ancestor DACL.
+        RestoreRecordedMembershipSeals(
+            journal,
+            paths,
+            journal.ParentIdentity.ToPhysical(paths.Parent),
+            journal.StageIdentity?.ToPhysical(paths.Target));
         using var parentLease = ExactDirectoryLease.OpenExisting(
             paths.Parent,
             journal.ParentIdentity.ToPhysical(paths.Parent),
             "interrupted Workshop parent");
-        if (journal.State == "manual_review")
-            throw new InvalidDataException(
-                "Interrupted receipt-deploy journal requires manual review; no automatic mutation is authorized.");
+        parentLease.RequireCurrentPath("interrupted Workshop parent after membership-seal restoration");
         if (journal.State.StartsWith("prior_", StringComparison.Ordinal))
         {
             var priorSnapshot = new ExactDirectorySnapshot(
@@ -725,11 +742,6 @@ internal static partial class LocalExactSetDeployment
                 new InvalidDataException(
                     "Interrupted mixed-prior reconstruction resumed from its durable journal."));
         }
-        RestoreRecordedMembershipSeals(
-            journal,
-            paths,
-            journal.ParentIdentity.ToPhysical(paths.Parent),
-            journal.StageIdentity?.ToPhysical(paths.Target));
         var targetExists = Directory.Exists(paths.Target);
         var backupExists = Directory.Exists(paths.Backup);
         var stageExists = Directory.Exists(paths.Stage);

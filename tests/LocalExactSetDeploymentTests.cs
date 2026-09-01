@@ -655,6 +655,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         string checkpoint)
     {
         using var temp = new TempDir();
+        using var restrictiveGrandparent = DenyDeleteChildAndRestore(temp.Path);
         var source = temp.CreateSubdir("source");
         var parent = temp.CreateSubdir("workshop");
         var target = temp.CreateSubdir(Path.Combine("workshop", PublishedId));
@@ -662,7 +663,15 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         File.WriteAllText(Path.Combine(source, NewBundle), "new bundle bytes");
         File.WriteAllText(Path.Combine(target, Mod + ".mod"), "old descriptor");
         File.WriteAllText(Path.Combine(target, OldBundle), "old bundle bytes");
+        var siblingDirectory = temp.CreateSubdir(@"workshop\unrelated");
+        var siblingFile = temp.Write(@"workshop\unrelated\unrelated.txt", "unrelated");
         var prior = Census(target);
+        var parentAcl = GetAcl(parent);
+        var targetAcl = GetAcl(target);
+        var priorDescriptorAcl = GetAcl(Path.Combine(target, Mod + ".mod"));
+        var priorBundleAcl = GetAcl(Path.Combine(target, OldBundle));
+        var siblingDirectoryAcl = GetAcl(siblingDirectory);
+        var siblingFileAcl = GetAcl(siblingFile);
         var worker = FindTransactionWorker();
         var mutex = @"Local\VMBLauncher.Tests.ReceiptDeploy." + Guid.NewGuid().ToString("N");
         var record = Path.Combine(temp.Path, "owner.json");
@@ -705,6 +714,12 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         }
 
         Assert.Equal(prior, Census(target));
+        Assert.Equal(parentAcl, GetAcl(parent));
+        Assert.Equal(targetAcl, GetAcl(target));
+        Assert.Equal(priorDescriptorAcl, GetAcl(Path.Combine(target, Mod + ".mod")));
+        Assert.Equal(priorBundleAcl, GetAcl(Path.Combine(target, OldBundle)));
+        Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
+        Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
         Assert.DoesNotContain(
             Directory.EnumerateFileSystemEntries(parent),
             path => Path.GetFileName(path).StartsWith(
@@ -724,6 +739,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         bool witnessExpected)
     {
         using var temp = new TempDir();
+        using var restrictiveGrandparent = DenyDeleteChildAndRestore(temp.Path);
         var source = temp.CreateSubdir("source");
         var parent = temp.CreateSubdir("workshop");
         var target = temp.CreateSubdir(Path.Combine("workshop", PublishedId));
@@ -1886,14 +1902,20 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         Assert.True(File.Exists(journal));
     }
 
-    [Fact]
-    public void PreReleaseSchema4Journal_IsExplicitlyPreservedWithoutRecoveryMutation()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PreReleaseSchema4Journal_IsRefusedBeforeCanonicalOrWitnessMutation(
+        bool retirementWitness,
+        bool safetyEntryPoint)
     {
         using var fixture = new Fixture();
         using var source = fixture.Capture();
         LocalExactSetDeployment.TransitionForTest = point =>
         {
-            if (point == "journal-durable")
+            if (point == "cleanup-durable")
                 throw new LocalDeploySimulatedCrashForTest(point);
         };
         try
@@ -1910,17 +1932,50 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             fixture.Parent, ".vmblauncher-receipt-deploy-*.journal.json").Single();
         var current = System.Text.Encoding.UTF8.GetString(ReadNewestJournalPayload(journal));
         Assert.Contains("\"schema\": 5", current, StringComparison.Ordinal);
-        var schema4 = current.Replace("\"schema\": 5", "\"schema\": 4", StringComparison.Ordinal);
-        ReplaceNewestJournalPayload(journal, System.Text.Encoding.UTF8.GetBytes(schema4));
-        using var retrySource = fixture.Capture();
+        ReplaceAllJournalPayloads(
+            journal,
+            json => json.Replace("\"schema\": 5", "\"schema\": 4", StringComparison.Ordinal));
+        var schema4 = System.Text.Encoding.UTF8.GetString(ReadNewestJournalPayload(journal));
+        var preservedPath = journal;
+        if (retirementWitness)
+        {
+            using var document = JsonDocument.Parse(schema4);
+            preservedPath = document.RootElement
+                .GetProperty("retirement_journal_path")
+                .GetString()!;
+            File.Move(journal, preservedPath);
+        }
+        var preservedBytes = File.ReadAllBytes(preservedPath);
+        var preservedNames = Directory.EnumerateFileSystemEntries(fixture.Parent)
+            .Select(Path.GetFileName)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
 
-        var retry = LocalExactSetDeployment.Reconcile(
-            fixture.Target, fixture.Authorization(), retrySource);
+        RunOutcome retry;
+        if (safetyEntryPoint)
+        {
+            retry = LocalExactSetDeployment.RecoverInterruptedSafety(
+                fixture.Parent,
+                Mod);
+        }
+        else
+        {
+            using var retrySource = fixture.Capture();
+            retry = LocalExactSetDeployment.Reconcile(
+                fixture.Target, fixture.Authorization(), retrySource);
+        }
 
         Assert.False(retry.Ok);
         Assert.Contains("schema-4", retry.Message, StringComparison.OrdinalIgnoreCase);
-        fixture.AssertTarget(fixture.Prior);
-        Assert.True(File.Exists(journal));
+        fixture.AssertTarget(fixture.Expected);
+        Assert.True(File.Exists(preservedPath));
+        Assert.Equal(preservedBytes, File.ReadAllBytes(preservedPath));
+        Assert.Equal(
+            preservedNames,
+            Directory.EnumerateFileSystemEntries(fixture.Parent)
+                .Select(Path.GetFileName)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
     }
 
     [Fact]
@@ -2106,6 +2161,37 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         return payload;
     }
 
+    private static void ReplaceAllJournalPayloads(
+        string path,
+        Func<string, string> replacement)
+    {
+        const int slotBytes = 8 * 1024 * 1024;
+        const int headerBytes = 48;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var header = new byte[headerBytes];
+        for (var slot = 0; slot < 2; slot++)
+        {
+            stream.Position = (long)slot * slotBytes;
+            stream.ReadExactly(header);
+            var sequence = BinaryPrimitives.ReadInt64LittleEndian(header.AsSpan(0, sizeof(long)));
+            var length = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(8, sizeof(int)));
+            if (sequence <= 0 || length <= 0) continue;
+            var payload = new byte[length];
+            stream.ReadExactly(payload);
+            var rewritten = System.Text.Encoding.UTF8.GetBytes(
+                replacement(System.Text.Encoding.UTF8.GetString(payload)));
+            Assert.InRange(rewritten.Length, 1, slotBytes - headerBytes);
+            Array.Clear(header);
+            BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(0, sizeof(long)), sequence);
+            BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8, sizeof(int)), rewritten.Length);
+            SHA256.HashData(rewritten).CopyTo(header, 16);
+            stream.Position = (long)slot * slotBytes;
+            stream.Write(header);
+            stream.Write(rewritten);
+        }
+        stream.Flush(flushToDisk: true);
+    }
+
     private static string[] SnapshotTree(string root) =>
         Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
             .Select(path =>
@@ -2219,6 +2305,34 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
                 new FileInfo(path),
                 AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
         return security.GetSecurityDescriptorBinaryForm();
+    }
+
+    private static IDisposable DenyDeleteChildAndRestore(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        var original = FileSystemAclExtensions.GetAccessControl(
+            info,
+            AccessControlSections.Access);
+        var originalBytes = original.GetSecurityDescriptorBinaryForm();
+        var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        original.AddAccessRule(new FileSystemAccessRule(
+            sid,
+            FileSystemRights.DeleteSubdirectoriesAndFiles,
+            InheritanceFlags.None,
+            PropagationFlags.None,
+            AccessControlType.Deny));
+        FileSystemAclExtensions.SetAccessControl(info, original);
+        return new AclRestorer(directory, originalBytes);
+    }
+
+    private sealed class AclRestorer(string path, byte[] descriptor) : IDisposable
+    {
+        public void Dispose()
+        {
+            var security = new DirectorySecurity();
+            security.SetSecurityDescriptorBinaryForm(descriptor, AccessControlSections.Access);
+            FileSystemAclExtensions.SetAccessControl(new DirectoryInfo(path), security);
+        }
     }
 
     private sealed record MembershipRaceWorkerResult(
