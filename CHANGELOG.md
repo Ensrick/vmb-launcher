@@ -4,6 +4,12 @@
 
 ### Test graph corrections (#1429, unreleased)
 
+- Hosted read-only discovery now explicitly binds a separate temporary VMB
+  directory containing only a deliberately non-executable presence marker.
+  Actual CLI tests run the hosted setup, prove list/info succeed without running
+  a tool, and prove the same configured directory without that marker is still
+  rejected by production preflight. Fixture and default-settings bytes stay
+  unchanged; no Steam, SDK, build, deploy or upload prerequisite is fabricated.
 - Canonical test verification explicitly builds the Debug test graph and passes
   its `bin/TestHooks/Debug` executable to the private-mutex wrapper fixture.
   The fixture refuses normal production/foreign executables before setup; a

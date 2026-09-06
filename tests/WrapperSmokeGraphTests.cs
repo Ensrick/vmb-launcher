@@ -182,7 +182,96 @@ public sealed class WrapperSmokeGraphTests
         Assert.Contains("WRAPPER_ENVIRONMENT_RESTORED_AND_FIXTURE_REMOVED", result.Output);
     }
 
+    [Theory]
+    [InlineData("powershell.exe")]
+    [InlineData("pwsh.exe")]
+    public void HostedDiscoverySetupPassesRealReadOnlyCliAndMissingMarkerStillFails(string shell)
+    {
+        using var tmp = new TempDir();
+        // Run the exact hosted setup body, not a separately authored equivalent.
+        var workflow = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "qa.yml"));
+        var start = workflow.IndexOf("      - name: Configure hermetic headless discovery fixture", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        start = workflow.IndexOf("        run: |", start, StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        start = workflow.IndexOf('\n', start) + 1;
+        var end = workflow.IndexOf("      - name: Release test graph", start, StringComparison.Ordinal);
+        Assert.True(end > start);
+        var setupBody = string.Join("\n", workflow[start..end].Split('\n').Select(line =>
+            string.IsNullOrWhiteSpace(line) ? "" : line[10..].TrimEnd('\r')));
+        var setup = tmp.Write("setup.ps1", setupBody);
+        var runnerTemp = tmp.CreateSubdir("runner");
+        var githubEnv = tmp.Write("github-env.txt", "");
+        var environment = new Dictionary<string, string>
+        {
+            ["RUNNER_TEMP"] = runnerTemp,
+            ["GITHUB_ENV"] = githubEnv,
+        };
+        var setupResult = RunWithEnvironment(shell, environment,
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-File", setup);
+        Assert.True(setupResult.Code == 0, setupResult.Output);
+        var config = Path.Combine(runnerTemp, "vmb-launcher-appdata", "VMBLauncher", "settings.json");
+        using var settings = JsonDocument.Parse(File.ReadAllText(config));
+        var vmbRoot = settings.RootElement.GetProperty("VmbRoot").GetString()!;
+        Assert.Equal(Path.Combine(runnerTemp, "vmb-launcher-discovery-only"), vmbRoot);
+        var marker = Path.Combine(vmbRoot, "vmb.exe");
+        var markerBytes = File.ReadAllBytes(marker);
+        Assert.Equal("DISCOVERY ONLY - NOT EXECUTABLE - MUST NEVER BE RUN", System.Text.Encoding.UTF8.GetString(markerBytes));
+        Assert.Contains("APPDATA=" + Path.Combine(runnerTemp, "vmb-launcher-appdata"), File.ReadAllText(githubEnv));
+        var before = Snapshot(tmp.Path);
+        var defaultConfig = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VMBLauncher", "settings.json");
+        var defaultBefore = File.Exists(defaultConfig) ? File.ReadAllBytes(defaultConfig) : null;
+        var configuration = typeof(WrapperSmokeGraphTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()!.Configuration;
+        var executable = Path.Combine(Root, "bin", "TestHooks", configuration, "net9.0-windows", "VMBLauncher.exe");
+
+        // Explicit --config selects only the hosted fixture, never machine defaults.
+        var list = Run(executable, "--config", config, "--no-banner", "list");
+        Assert.True(list.Code == 0, list.Output);
+        Assert.Matches(@"NAME\s+VISIBILITY\s+WORKSHOP_ID\s+BUILT", list.Output);
+        Assert.Matches(@"(?m)^general_tweaker\s+private\s+1\s+no build", list.Output);
+        Assert.Matches(@"(?m)^chaos_wastes_tweaker\s+public\s+2\s+no build", list.Output);
+        foreach (var mod in new[] { "general_tweaker", "chaos_wastes_tweaker" })
+        {
+            var info = Run(executable, "info", mod, "--no-banner", "--config", config);
+            Assert.True(info.Code == 0, info.Output);
+            Assert.Contains("Visibility:", info.Output);
+            Assert.Contains("Workshop ID:", info.Output);
+            Assert.Contains(Path.Combine(runnerTemp, "vmb-launcher-project", mod), info.Output);
+        }
+        Assert.Equal(2, Run(executable, "info", "no_such_mod_12345", "--no-banner", "--config", config).Code);
+        AssertSnapshot(before, tmp.Path);
+
+        // Independent negative: a configured nonempty root disables autodetect,
+        // but an existing empty directory is NOT a valid VMB installation.
+        File.Delete(marker);
+        foreach (var arguments in new[] { new[] { "list" }, new[] { "info", "general_tweaker" }, new[] { "info", "no_such_mod_12345" } })
+        {
+            var rejected = Run(executable, arguments.Concat(new[] { "--no-banner", "--config", config }).ToArray());
+            Assert.Equal(3, rejected.Code);
+            Assert.Contains("VMB", rejected.Output);
+            Assert.Contains("isn't configured", rejected.Output);
+        }
+        Assert.False(File.Exists(marker));
+        File.WriteAllBytes(marker, markerBytes);
+        AssertSnapshot(before, tmp.Path);
+        Assert.Equal(defaultBefore, File.Exists(defaultConfig) ? File.ReadAllBytes(defaultConfig) : null);
+    }
+
+    private static Dictionary<string, byte[]> Snapshot(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .ToDictionary(path => Path.GetRelativePath(root, path), File.ReadAllBytes, StringComparer.Ordinal);
+
+    private static void AssertSnapshot(Dictionary<string, byte[]> expected, string root)
+    {
+        var actual = Snapshot(root);
+        Assert.Equal(expected.Keys.OrderBy(path => path, StringComparer.Ordinal), actual.Keys.OrderBy(path => path, StringComparer.Ordinal));
+        foreach (var (path, bytes) in expected) Assert.Equal(bytes, actual[path]);
+    }
+
     private static (int Code, string Output) Run(string executable, params string[] args)
+        => RunWithEnvironment(executable, null, args);
+
+    private static (int Code, string Output) RunWithEnvironment(string executable, Dictionary<string, string>? environment, params string[] args)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -192,6 +281,8 @@ public sealed class WrapperSmokeGraphTests
             RedirectStandardError = true,
             WorkingDirectory = Root,
         };
+        if (environment is not null)
+            foreach (var (name, value) in environment) start.Environment[name] = value;
         foreach (var arg in args) start.ArgumentList.Add(arg);
         using var process = Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();

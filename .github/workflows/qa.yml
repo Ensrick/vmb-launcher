@@ -34,8 +34,15 @@ jobs:
         run: |
           $appData = Join-Path $env:RUNNER_TEMP 'vmb-launcher-appdata'
           $project = Join-Path $env:RUNNER_TEMP 'vmb-launcher-project'
+          $vmbRoot = Join-Path $env:RUNNER_TEMP 'vmb-launcher-discovery-only'
           $settingsDir = Join-Path $appData 'VMBLauncher'
-          New-Item -ItemType Directory -Force -Path $settingsDir, $project | Out-Null
+          New-Item -ItemType Directory -Force -Path $settingsDir, $project, $vmbRoot | Out-Null
+          # Locator presence only: deliberately NOT a runnable PE executable.
+          # Read-only list/info must never execute a VMB tool, even in CI.
+          [IO.File]::WriteAllText(
+            (Join-Path $vmbRoot 'vmb.exe'),
+            'DISCOVERY ONLY - NOT EXECUTABLE - MUST NEVER BE RUN',
+            [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllText(
             (Join-Path $project '.vmbrc'),
             '{"mods_dir":"."}',
@@ -62,6 +69,7 @@ jobs:
           }
 
           $settings = @{
+            VmbRoot = $vmbRoot
             ProjectRoot = $project
             ConfirmedFirstRun = $true
             RemoteDeployTargets = @()

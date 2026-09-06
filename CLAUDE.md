@@ -788,6 +788,15 @@ hooks. The later `publish.ps1` production build and published-binary
 `headless_smoke.ps1` remain separate and unchanged. Clean-checkout orchestration
 fixtures must prove this order without any pre-existing normal `bin/Debug`.
 
+Hosted read-only discovery supplies an explicit temporary `VmbRoot` as well as
+`ProjectRoot`. The former contains only a non-executable `vmb.exe` presence
+marker, never a downloaded or runnable tool. Current list/info preflight
+requires that locator evidence; an existing empty VMB directory must continue
+to fail with exit 3. The real CLI is exercised with `--config` bound to these
+fixture settings, and the exact hosted setup plus file preservation is tested.
+Do not relax production discovery or provide real SDK/Steam/action prerequisites
+to make a read-only verification fixture pass.
+
 The default headless smoke clones launcher settings to a temporary isolated
 config, passes `--config` on every invocation, proves the real default settings
 bytes did not change, and removes the copy in `finally`.
