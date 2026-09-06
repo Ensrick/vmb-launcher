@@ -44,6 +44,21 @@
   mismatch which must not partially restore the first directory. These changes
   remain an uninstalled launcher candidate, not a Steam SDK crash fix.
 
+### Fixed: local exact-set membership readback (#1429, unreleased)
+
+- Hosted recovery failures independently reproduced with an authentic NTFS
+  descriptor and journal plan differing only by Windows' auto-inherited marker.
+  Membership readback now permits only the directional recorded `0` to observed
+  `1` marker change; owner/group, ordered DACL bytes and all other validated
+  DACL control flags still match exactly.
+- Durable plan equality and deterministic plan recomputation remain strict.
+  This does not change the current-user directory-owner requirement, the upload
+  ownerless-journal lane, or any receipt/publication permission.
+- Tests run real Prepare, Resume, Apply, crash-style Resume and Restore with
+  marker-free recorded plans, prove failed-apply restoration preserves its
+  original exception, and reject inverse-marker, plan, identity and ACE drift.
+  No launcher installation or Workshop publication is implied by these tests.
+
 ### Added: receipt-authority local exact-set deployment (#1429)
 
 - Canonical ship may supply its distinct hosted `--deployment-receipt` only to

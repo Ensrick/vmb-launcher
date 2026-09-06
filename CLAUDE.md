@@ -136,6 +136,16 @@ before any write, rechecks at each write and verifies the final restored census
 before removing the journal. The local exact-set membership owner's stricter
 current-user requirement is independent and unchanged.
 
+Local exact-set membership seals use a directional observed-versus-recorded
+comparison at preconditions, postconditions, Resume and Restore: Windows may
+add `SE_DACL_AUTO_INHERITED` (`0 -> 1`) while owner/group, byte-exact ordered
+DACL and every other validated DACL control flag remain unchanged. Clearing
+that marker is not permitted. Recorded plan equality, deterministic seal
+recomputation and original-versus-sealed distinction stay strict; never use the
+readback allowance to accept a modified journal plan. Tests exercise actual
+NTFS Prepare/Resume/Apply/Restore with both recorded marker bits cleared,
+failed-apply restoration, and independent descriptor/plan tampering.
+
 The launcher joins a named kill-on-close Windows Job before mutation. Its
 schema-2 owner record persists that exact Job name. After hard owner death, a
 contender polls the recorded Job's `ActiveProcesses` accounting and closes

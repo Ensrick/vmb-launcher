@@ -215,7 +215,7 @@ public class TransactionMutationCensusTests
             // Handle-bound NTFS DACL mutation is journal-planned before use,
             // exact-state checked after use, machine-lease guarded, and
             // covered by crash/foreign-drift/independent-process tests.
-            "Services/LocalExactSetMembershipSeal.cs:343:25:1:SetSecurityInfo",
+            "Services/LocalExactSetMembershipSeal.cs:344:25:1:SetSecurityInfo",
             "Services/LocalExactSetNamespace.cs:104:30:1:NtCreateFile",
             "Services/LocalExactSetNamespace.cs:230:26:1:NtCreateFile",
             "Services/LocalExactSetNamespace.cs:295:34:1:new FileStream",

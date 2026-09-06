@@ -339,6 +339,231 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         seal.RequireOriginal();
     }
 
+    [Fact]
+    public void JournalPlanWithoutAutoInheritedMarker_ResumesAppliesAndRestoresObservedMarker()
+    {
+        using var temp = new TempDir();
+        var target = temp.CreateSubdir("target");
+        var child = temp.Write(@"target\child.txt", "untouched");
+        var childBefore = GetAcl(child);
+        var identity = ImmutableBundleSourceLease.InspectDirectory(target);
+        using var prepared = LocalExactSetMembershipSeal.Prepare(target, identity);
+        AssertAutoInherited(GetAcl(target));
+        var recorded = WithoutAutoInherited(prepared.Plan);
+        LocalExactSetMembershipSeal.ValidatePlan(recorded);
+        Assert.False(prepared.Plan.SemanticallyMatches(recorded));
+        prepared.AbandonWithoutRestore();
+
+        using (var resumed = LocalExactSetMembershipSeal.Resume(recorded, identity))
+        {
+            resumed.RequireOriginal();
+            resumed.Apply();
+            resumed.RequireApplied();
+            AssertAutoInherited(GetAcl(target));
+            Assert.Equal(childBefore, GetAcl(child));
+            resumed.AbandonWithoutRestore();
+        }
+
+        using (var recovered = LocalExactSetMembershipSeal.Resume(recorded, identity))
+        {
+            recovered.RequireApplied();
+            recovered.Restore();
+            recovered.RequireOriginal();
+            // Repeated restore recognizes observed-original without another mutation.
+            var restored = GetAcl(target);
+            AssertAutoInherited(restored);
+            recovered.Restore();
+            Assert.Equal(restored, GetAcl(target));
+        }
+        Assert.Equal(childBefore, GetAcl(child));
+        File.WriteAllText(Path.Combine(target, "after-recovery.txt"), "allowed");
+        // Neither successful readback nor recovery rewrites the recorded authority.
+        Assert.False(HasAutoInherited(Convert.FromBase64String(recorded.OriginalDescriptor)));
+        Assert.False(HasAutoInherited(Convert.FromBase64String(recorded.SealedDescriptor)));
+    }
+
+    [Fact]
+    public void PlanComparisonAndRecomputation_RejectAnAutoInheritedOnlyPlanChange()
+    {
+        using var temp = new TempDir();
+        var target = temp.CreateSubdir("target");
+        using var prepared = LocalExactSetMembershipSeal.Prepare(
+            target, ImmutableBundleSourceLease.InspectDirectory(target));
+        var recorded = WithoutAutoInherited(prepared.Plan);
+        LocalExactSetMembershipSeal.ValidatePlan(recorded);
+        var originalChanged = recorded with
+        {
+            OriginalDescriptor = ChangeFlags(recorded.OriginalDescriptor,
+                flags => flags | ControlFlags.DiscretionaryAclAutoInherited),
+        };
+        var sealedChanged = recorded with
+        {
+            SealedDescriptor = ChangeFlags(recorded.SealedDescriptor,
+                flags => flags | ControlFlags.DiscretionaryAclAutoInherited),
+        };
+        foreach (var changed in new[] { originalChanged, sealedChanged })
+        {
+            Assert.False(recorded.SemanticallyMatches(changed));
+            Assert.False(changed.SemanticallyMatches(recorded));
+            Assert.Throws<InvalidDataException>(() => LocalExactSetMembershipSeal.ValidatePlan(changed));
+        }
+        prepared.RequireOriginal();
+    }
+
+    [Fact]
+    public void FailedApplyWithJournalMarkerAbsent_RestoresWithoutReplacingOriginalFailure()
+    {
+        using var temp = new TempDir();
+        var target = temp.CreateSubdir("target");
+        var child = temp.Write(@"target\child.txt", "untouched");
+        var original = GetAcl(target);
+        var childBefore = GetAcl(child);
+        AssertAutoInherited(original);
+        var identity = ImmutableBundleSourceLease.InspectDirectory(target);
+        using var prepared = LocalExactSetMembershipSeal.Prepare(target, identity);
+        var recorded = WithoutAutoInherited(prepared.Plan);
+        prepared.AbandonWithoutRestore();
+        using var resumed = LocalExactSetMembershipSeal.Resume(recorded, identity);
+        var failure = new IOException("planted failure after real SetSecurityInfo");
+        LocalExactSetMembershipSeal.AppliedForTest = _ => throw failure;
+        try
+        {
+            var error = Assert.Throws<InvalidDataException>(() => resumed.Apply());
+            Assert.Same(failure, error.InnerException);
+        }
+        finally
+        {
+            LocalExactSetMembershipSeal.AppliedForTest = null;
+        }
+        resumed.RequireOriginal();
+        Assert.Equal(original, GetAcl(target));
+        Assert.Equal(childBefore, GetAcl(child));
+    }
+
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    public void ObservedDescriptorComparison_AllowsOnlyMonotonicMarker(
+        bool expectedMarker, bool actualMarker, bool matches)
+    {
+        var descriptor = new RawSecurityDescriptor("O:BAG:SYD:(D;;WD;;;BU)(A;;FA;;;SY)(A;CI;FR;;;BU)");
+        var basis = Encode(descriptor);
+        var expected = ChangeFlags(basis, flags => expectedMarker
+            ? flags | ControlFlags.DiscretionaryAclAutoInherited
+            : flags & ~ControlFlags.DiscretionaryAclAutoInherited);
+        var actual = ChangeFlags(basis, flags => actualMarker
+            ? flags | ControlFlags.DiscretionaryAclAutoInherited
+            : flags & ~ControlFlags.DiscretionaryAclAutoInherited);
+        Assert.Equal(matches, LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(actual, expected));
+    }
+
+    [Theory]
+    [InlineData(ControlFlags.DiscretionaryAclProtected)]
+    [InlineData(ControlFlags.DiscretionaryAclAutoInheritRequired)]
+    [InlineData(ControlFlags.DiscretionaryAclDefaulted)]
+    public void ObservedDescriptorComparison_RejectsEveryOtherValidatedControlChange(ControlFlags change)
+    {
+        var descriptor = new RawSecurityDescriptor("O:BAG:SYD:(A;;FA;;;SY)");
+        var expected = Encode(descriptor);
+        var actual = ChangeFlags(expected,
+            flags => flags | change | ControlFlags.DiscretionaryAclAutoInherited);
+        Assert.False(LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(actual, expected));
+        Assert.False(LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(expected, actual));
+    }
+
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("group")]
+    [InlineData("rights")]
+    [InlineData("ace-sid")]
+    [InlineData("ace-flags")]
+    [InlineData("order")]
+    [InlineData("revision")]
+    [InlineData("empty")]
+    public void ObservedDescriptorComparison_RejectsIdentityAndOrderedDaclDrift(string change)
+    {
+        var descriptor = new RawSecurityDescriptor("O:BAG:SYD:(D;;WD;;;BU)(A;;FA;;;SY)(A;CI;FR;;;BU)");
+        var expected = Encode(descriptor);
+        descriptor.SetFlags(descriptor.ControlFlags | ControlFlags.DiscretionaryAclAutoInherited);
+        switch (change)
+        {
+            case "owner": descriptor.Owner = new SecurityIdentifier("S-1-5-18"); break;
+            case "group": descriptor.Group = new SecurityIdentifier("S-1-5-32-545"); break;
+            case "rights": ((CommonAce)descriptor.DiscretionaryAcl![0]).AccessMask ^= 1; break;
+            case "ace-sid": ((CommonAce)descriptor.DiscretionaryAcl![0]).SecurityIdentifier = new SecurityIdentifier("S-1-1-0"); break;
+            case "ace-flags": descriptor.DiscretionaryAcl![0].AceFlags ^= AceFlags.Inherited; break;
+            case "order":
+                var first = descriptor.DiscretionaryAcl![0];
+                descriptor.DiscretionaryAcl[0] = descriptor.DiscretionaryAcl[1];
+                descriptor.DiscretionaryAcl[1] = first;
+                break;
+            case "revision":
+                var oldAcl = descriptor.DiscretionaryAcl!;
+                var newAcl = new RawAcl(4, oldAcl.Count);
+                for (var index = 0; index < oldAcl.Count; index++) newAcl.InsertAce(index, oldAcl[index]);
+                descriptor.DiscretionaryAcl = newAcl;
+                break;
+            case "empty": descriptor.DiscretionaryAcl = new RawAcl(2, 0); break;
+        }
+        Assert.False(LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(Encode(descriptor), expected));
+    }
+
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("group")]
+    [InlineData("null-dacl")]
+    [InlineData("absent-dacl")]
+    public void ObservedDescriptorComparison_RejectsIncompleteAuthority(string change)
+    {
+        var descriptor = new RawSecurityDescriptor("O:BAG:SYD:(A;;FA;;;SY)");
+        var expected = Encode(descriptor);
+        descriptor.SetFlags(descriptor.ControlFlags | ControlFlags.DiscretionaryAclAutoInherited);
+        switch (change)
+        {
+            case "owner": descriptor.Owner = null; break;
+            case "group": descriptor.Group = null; break;
+            case "null-dacl": descriptor.DiscretionaryAcl = null; break;
+            case "absent-dacl": descriptor.SetFlags(descriptor.ControlFlags & ~ControlFlags.DiscretionaryAclPresent); break;
+        }
+        var incomplete = Encode(descriptor);
+        Assert.Throws<InvalidDataException>(() =>
+            LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(incomplete, expected));
+        Assert.Throws<InvalidDataException>(() =>
+            LocalExactSetMembershipSeal.ObservedDescriptorMatchesForTest(expected, incomplete));
+    }
+
+    private static LocalExactSetMembershipSeal.SecurityPlan WithoutAutoInherited(
+        LocalExactSetMembershipSeal.SecurityPlan plan) => plan with
+    {
+        OriginalDescriptor = ChangeFlags(plan.OriginalDescriptor,
+            flags => flags & ~ControlFlags.DiscretionaryAclAutoInherited),
+        SealedDescriptor = ChangeFlags(plan.SealedDescriptor,
+            flags => flags & ~ControlFlags.DiscretionaryAclAutoInherited),
+    };
+
+    private static string ChangeFlags(string descriptor, Func<ControlFlags, ControlFlags> change)
+    {
+        var raw = new RawSecurityDescriptor(Convert.FromBase64String(descriptor), 0);
+        raw.SetFlags(change(raw.ControlFlags));
+        return Encode(raw);
+    }
+
+    private static string Encode(RawSecurityDescriptor descriptor)
+    {
+        var bytes = new byte[descriptor.BinaryLength];
+        descriptor.GetBinaryForm(bytes, 0);
+        return Convert.ToBase64String(bytes);
+    }
+
+    private static bool HasAutoInherited(byte[] descriptor) =>
+        (new RawSecurityDescriptor(descriptor, 0).ControlFlags &
+            ControlFlags.DiscretionaryAclAutoInherited) != 0;
+
+    private static void AssertAutoInherited(byte[] descriptor) => Assert.True(HasAutoInherited(descriptor),
+        "This fixture must exercise actual NTFS readback with SE_DACL_AUTO_INHERITED set.");
+
     private static byte[] GetAcl(string path)
     {
         FileSystemSecurity security = Directory.Exists(path)

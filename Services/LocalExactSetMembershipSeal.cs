@@ -11,9 +11,10 @@ namespace VmbLauncher.Services;
 /// An exact, handle-bound NTFS DACL seal for one directory namespace.
 ///
 /// The planned descriptor is recorded before Apply mutates the DACL. Apply is
-/// accepted only when NTFS returns that exact ACL/control state; any
-/// canonicalization, inheritance, owner/group, identity, or path drift fails
-/// closed. The still-open WRITE_DAC handle restores the exact original state.
+/// accepted only when NTFS returns the exact ACL and validated control state,
+/// except for its monotonic SE_DACL_AUTO_INHERITED readback marker. Recorded
+/// plan comparisons remain strict. Owner/group, ACE, identity and path drift
+/// fail closed. The still-open WRITE_DAC handle restores the original state.
 /// This is authority against ordinary same-user namespace operations, not a
 /// sandbox against an administrator or owner deliberately replacing the DACL;
 /// persistent ACL drift is detected, while that privileged transient attack is
@@ -182,8 +183,8 @@ internal sealed class LocalExactSetMembershipSeal : IDisposable
             var current = ReadSnapshot(handle, "membership-seal recovery DACL");
             var original = Snapshot.FromBase64(plan.OriginalDescriptor);
             var sealedSnapshot = Snapshot.FromBase64(plan.SealedDescriptor);
-            var applied = current.SemanticallyEquals(sealedSnapshot);
-            if (!applied && !current.SemanticallyEquals(original))
+            var applied = current.ObservedMatches(sealedSnapshot);
+            if (!applied && !current.ObservedMatches(original))
                 throw new InvalidDataException(
                     "Membership-seal recovery DACL differs from both exact recorded states.");
             var resumed = new LocalExactSetMembershipSeal(
@@ -259,13 +260,13 @@ internal sealed class LocalExactSetMembershipSeal : IDisposable
         RequireCurrentIdentity();
         var current = ReadSnapshot(Handle, "membership-seal restoration precondition");
         var original = Snapshot.FromBase64(Plan.OriginalDescriptor);
-        if (current.SemanticallyEquals(original))
+        if (current.ObservedMatches(original))
         {
             _applied = false;
             return;
         }
         var sealedSnapshot = Snapshot.FromBase64(Plan.SealedDescriptor);
-        if (!current.SemanticallyEquals(sealedSnapshot))
+        if (!current.ObservedMatches(sealedSnapshot))
             throw new InvalidDataException(
                 "Membership-seal DACL drifted from both its exact original and launcher-owned states.");
 
@@ -317,7 +318,7 @@ internal sealed class LocalExactSetMembershipSeal : IDisposable
     {
         var expected = Snapshot.FromBase64(expectedBase64);
         var actual = ReadSnapshot(Handle, context);
-        if (!actual.SemanticallyEquals(expected))
+        if (!actual.ObservedMatches(expected))
             throw new InvalidDataException(
                 $"{context} differs from its exact recorded DACL state: " +
                 actual.DescribeDifference(expected));
@@ -600,12 +601,26 @@ internal sealed class LocalExactSetMembershipSeal : IDisposable
             return FromBytes(bytes);
         }
 
-        internal bool SemanticallyEquals(Snapshot other)
+        // Directional readback comparison only. Do not use for recorded plan
+        // equality or deterministic plan recomputation: NTFS may add AI after
+        // SetSecurityInfo, but a caller may not alter the stored authority.
+        internal bool ObservedMatches(Snapshot expected)
+        {
+            var actualFlags = Raw.ControlFlags & DaclControlMask;
+            var expectedFlags = expected.Raw.ControlFlags & DaclControlMask;
+            return (actualFlags == expectedFlags ||
+                    actualFlags == (expectedFlags | ControlFlags.DiscretionaryAclAutoInherited)) &&
+                SameOwnerGroupAndDacl(expected);
+        }
+
+        internal bool SemanticallyEquals(Snapshot other) =>
+            (Raw.ControlFlags & DaclControlMask) == (other.Raw.ControlFlags & DaclControlMask) &&
+            SameOwnerGroupAndDacl(other);
+
+        private bool SameOwnerGroupAndDacl(Snapshot other)
         {
             if (!Equals(Raw.Owner, other.Raw.Owner) ||
                 !Equals(Raw.Group, other.Raw.Group) ||
-                (Raw.ControlFlags & DaclControlMask) !=
-                    (other.Raw.ControlFlags & DaclControlMask) ||
                 Dacl == null || other.Dacl == null ||
                 Dacl.BinaryLength != other.Dacl.BinaryLength)
                 return false;
@@ -634,6 +649,12 @@ internal sealed class LocalExactSetMembershipSeal : IDisposable
                 expected.Raw.GetSddlForm(AccessControlSections.Access);
         }
     }
+
+#if VMBLAUNCHER_TEST_HOOKS
+    // Pure descriptor seam; no filesystem, identity substitution or ACL writes.
+    internal static bool ObservedDescriptorMatchesForTest(string actual, string expected) =>
+        Snapshot.FromBase64(actual).ObservedMatches(Snapshot.FromBase64(expected));
+#endif
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(
