@@ -1,6 +1,7 @@
 using System.Threading;
 using System.IO;
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json.Nodes;
 using VmbLauncher.Services;
 
@@ -56,39 +57,40 @@ public class MachineTransactionLeaseTests
             worker, "owner-crash-simple", mutex, record, tmp.Path,
             ownerMarker, crash, 5000);
         WaitForFile(ownerMarker, owner);
-        // Plant the durable-recovery failure while two independent contenders
-        // are already queued. Keeping their handles open also preserves the
-        // named mutex object across each crashing owner's process exit.
+        // A non-owning handle preserves the actual kernel object across each
+        // owner exit. Kill this exact fixture process after its acquired marker:
+        // FailFast/WER took 5.442s in the #1429 Release run and exhausted the
+        // contenders' 5s acquisition budgets before the owner actually died.
+        using var keeper = Mutex.OpenExisting(mutex);
         File.Delete(record);
+        owner.Kill();
+        Assert.True(owner.WaitForExit(10_000));
+        Assert.NotEqual(0, owner.ExitCode);
+
+        // Each fresh process must reject absent durable authority, and its
+        // failed recovery must leave the retained mutex abandoned for the next.
+        const string refusal = "The machine transaction has prior ownership evidence but its durable owner record is missing or unreadable; refusing recovery.";
         var firstMarker = Path.Combine(tmp.Path, "first.marker");
         using var first = StartWorker(
             worker, "contender-first", mutex, record, tmp.Path,
             firstMarker, "", 5000);
+        Assert.True(first.WaitForExit(10_000));
+        var firstError = first.StandardError.ReadToEnd();
+        Assert.NotEqual(0, first.ExitCode);
+        Assert.True(firstError.Contains(refusal, StringComparison.Ordinal),
+            $"First contender did not report exact missing-owner refusal: {firstError}");
+        Assert.False(File.Exists(firstMarker));
+        Assert.False(File.Exists(record));
+
         var secondMarker = Path.Combine(tmp.Path, "second.marker");
         using var second = StartWorker(
             worker, "contender-second", mutex, record, tmp.Path,
             secondMarker, "", 5000);
-        Thread.Sleep(100);
-        Assert.False(File.Exists(firstMarker));
-        Assert.False(File.Exists(secondMarker));
-        File.WriteAllText(crash, "crash");
-        Assert.True(owner.WaitForExit(10_000));
-        Assert.NotEqual(0, owner.ExitCode);
-
-        // The first contender takes the abandoned mutex but must not normalize
-        // it when the record is absent.
-        Assert.True(first.WaitForExit(10_000));
-        var firstError = first.StandardError.ReadToEnd();
-        Assert.NotEqual(0, first.ExitCode);
-        Assert.Contains("abandoned", firstError, StringComparison.OrdinalIgnoreCase);
-        Assert.False(File.Exists(firstMarker));
-
-        // Process exit re-abandons the retained mutex to the queued second
-        // contender rather than allowing it to overwrite authority.
         Assert.True(second.WaitForExit(10_000));
         var secondError = second.StandardError.ReadToEnd();
         Assert.NotEqual(0, second.ExitCode);
-        Assert.Contains("abandoned", secondError, StringComparison.OrdinalIgnoreCase);
+        Assert.True(secondError.Contains(refusal, StringComparison.Ordinal),
+            $"Second contender did not report exact missing-owner refusal: {secondError}");
         Assert.False(File.Exists(secondMarker));
         Assert.False(File.Exists(record));
     }
@@ -676,13 +678,16 @@ public class MachineTransactionLeaseTests
 
     private static string FindWorker()
     {
+        var configuration = typeof(MachineTransactionLeaseTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration;
+        Assert.False(string.IsNullOrWhiteSpace(configuration), "test assembly has no build configuration");
         var testsRoot = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "..", "..", ".."));
         var candidate = Path.Combine(
             testsRoot,
             "TransactionLeaseWorker",
             "bin",
-            "Debug",
+            configuration!,
             "net9.0-windows",
             "VmbLauncher.TransactionLeaseWorker.exe");
         Assert.True(File.Exists(candidate), $"transaction worker missing: {candidate}");

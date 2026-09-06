@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 
 namespace VmbLauncher.Tests;
 
@@ -555,8 +556,11 @@ public class TransactionMutationCensusTests
 
     private static Dictionary<string, string> LoadGeneratedSemanticSupportSources()
     {
+        var configuration = typeof(TransactionMutationCensusTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration;
+        Assert.False(string.IsNullOrWhiteSpace(configuration), "test assembly has no build configuration");
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-        var generatedRoot = Path.Combine(root, "obj", "Debug", "net9.0-windows");
+        var generatedRoot = Path.Combine(root, "obj", "TestHooks", configuration!, "net9.0-windows");
         if (!Directory.Exists(generatedRoot))
             throw new DirectoryNotFoundException(
                 $"WPF semantic support was not generated before the census: {generatedRoot}");

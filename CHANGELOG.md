@@ -2,6 +2,22 @@
 
 ## v0.6.2 (2026-08-26)
 
+### Test graph corrections (#1429, unreleased)
+
+- Machine-lease fixtures resolve their worker from the active test assembly's
+  build configuration instead of hardcoding Debug. Mutation-census fixtures
+  read the matching `obj/TestHooks/<configuration>/net9.0-windows` generated
+  semantic support, retaining all exact census and unresolved-symbol checks.
+- Temporary test cleanup validates its owned paths and rejects links before
+  deleting individual files and empty directories; no recursive deletion or
+  permission repair is used.
+- The repeated abandoned-owner fixture now retains a non-owning mutex handle,
+  terminates its exact acquired owner without crash-reporting delay, and checks
+  the exact missing-authority refusal for two fresh contenders. A stack-trace
+  parameter named `wasAbandoned` is no longer accepted as refusal evidence.
+- These fixture-path corrections do not relax production ownership, ACL,
+  receipt or publication gates and do not resolve the separate Steam SDK crash.
+
 ### Added: receipt-authority local exact-set deployment (#1429)
 
 - Canonical ship may supply its distinct hosted `--deployment-receipt` only to
