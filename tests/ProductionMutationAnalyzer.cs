@@ -45,7 +45,8 @@ internal static class ProductionMutationAnalyzer
     private static readonly HashSet<string> NativeMutationCalls = new(StringComparer.Ordinal)
     {
         "AssignProcessToJobObject", "CreateJobObjectW", "CreateProcessW", "SetInformationJobObject",
-        "SetKernelObjectSecurity",
+        "SetKernelObjectSecurity", "SetSecurityInfo", "NtCreateFile", "NtSetInformationFile", "SetFileInformationByHandle",
+        "SetFileInformationByHandleBuffer",
     };
 
     private static readonly HashSet<string> StreamMutationMethods = new(StringComparer.Ordinal)
@@ -277,7 +278,40 @@ internal static class ProductionMutationAnalyzer
         {
             var method = invokedMethod.ReducedFrom ?? invokedMethod;
             var receiverType = ReceiverType(node) ?? invokedMethod.ReceiverType ?? invokedMethod.ContainingType;
+            var nativeCreate = ClassifyNativeCreate(node, method);
+            if (nativeCreate is not null) return nativeCreate;
             return ClassifyMethod(method, receiverType, IsConsoleWriterReceiver(node));
+        }
+
+        private string? ClassifyNativeCreate(
+            InvocationExpressionSyntax node,
+            IMethodSymbol method)
+        {
+            if (method.Name is not ("CreateFileW" or "CreateFileForDeleteW")) return null;
+            var disposition = method.Parameters.FirstOrDefault(parameter =>
+                string.Equals(parameter.Name, "creationDisposition", StringComparison.OrdinalIgnoreCase));
+            if (disposition == null) return "CreateFileW(create-or-unresolved)";
+            var argument = node.ArgumentList.Arguments.FirstOrDefault(item =>
+                item.NameColon?.Name.Identifier.ValueText == disposition.Name) ??
+                (disposition.Ordinal < node.ArgumentList.Arguments.Count
+                    ? node.ArgumentList.Arguments[disposition.Ordinal]
+                    : null);
+            if (argument == null) return "CreateFileW(create-or-unresolved)";
+            var constant = model.GetConstantValue(argument.Expression);
+            if (!constant.HasValue) return "CreateFileW(create-or-unresolved)";
+            try
+            {
+                // OPEN_EXISTING (3) is the only non-creating disposition used
+                // by the exact-set lane. Every other constant may create,
+                // truncate, or replace a filesystem object.
+                return Convert.ToUInt32(constant.Value) == 3
+                    ? null
+                    : "CreateFileW(create)";
+            }
+            catch (Exception)
+            {
+                return "CreateFileW(create-or-unresolved)";
+            }
         }
 
         private static string? ClassifyMethod(

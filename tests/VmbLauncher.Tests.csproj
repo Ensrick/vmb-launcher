@@ -18,9 +18,11 @@
 
   <ItemGroup>
     <Compile Remove="TransactionLeaseWorker\**\*.cs" />
-    <ProjectReference Include="..\VmbLauncher.csproj" />
+    <ProjectReference Include="..\VmbLauncher.csproj"
+                      AdditionalProperties="VmbLauncherTestBuild=true" />
     <ProjectReference Include="TransactionLeaseWorker\VmbLauncher.TransactionLeaseWorker.csproj"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false"
+                      AdditionalProperties="VmbLauncherTestBuild=true" />
   </ItemGroup>
 
   <ItemGroup>

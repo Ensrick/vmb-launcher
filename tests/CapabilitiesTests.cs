@@ -10,6 +10,7 @@ public class CapabilitiesTests
         var lines = CapabilitiesCommand.Lines();
         Assert.Contains("capability_schema=1", lines);
         Assert.Contains("publication_receipt_schema=3", lines);
+        Assert.Contains("deployment_receipt_schema=3", lines);
         Assert.Contains(
             lines,
             line => line.Contains("hosted-publication-receipt-v3", StringComparison.Ordinal) &&
@@ -18,6 +19,7 @@ public class CapabilitiesTests
                     line.Contains("constrained-first-upload-bootstrap-v1", StringComparison.Ordinal) &&
                     line.Contains("machine-transaction-lease-v1", StringComparison.Ordinal) &&
                     line.Contains("crash-safe-upload-acl-journal-v1", StringComparison.Ordinal) &&
-                    line.Contains("receipt-authority-publication-v1", StringComparison.Ordinal));
+                    line.Contains("receipt-authority-publication-v1", StringComparison.Ordinal) &&
+                    line.Contains("receipt-authority-local-deploy-v1", StringComparison.Ordinal));
     }
 }

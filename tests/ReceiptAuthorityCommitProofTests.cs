@@ -189,6 +189,74 @@ public class ReceiptAuthorityCommitProofTests : MutationTestBase
     }
 
     [Fact]
+    public void ParseTreeObject_EnforcesExactPreallocationEntryBound()
+    {
+        var exact = TreeObject(
+            ("100644", "a.lua", (byte)1),
+            ("100644", "b.lua", (byte)2),
+            ("100644", "c.lua", (byte)3));
+
+        Assert.Equal(3, PublicationReceiptGate.ParseTreeObject(exact, 3).Count);
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.ParseTreeObject(exact, 2));
+        Assert.Contains("traversal budget", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void VerifiedTreeTraversal_CountsEveryFlatLeafAtExactLogicalLimit()
+    {
+        var root = new string('0', 40);
+        var exact = TreeObject(
+            ("100644", "a.lua", (byte)1),
+            ("100644", "b.lua", (byte)2),
+            ("160000", "submodule", (byte)3));
+        var overflow = TreeObject(
+            ("100644", "a.lua", (byte)1),
+            ("100644", "b.lua", (byte)2),
+            ("100644", "c.lua", (byte)3),
+            ("160000", "submodule", (byte)4));
+
+        var result = PublicationReceiptGate.ReadVerifiedTreeForTest(
+            root,
+            _ => exact,
+            maximumLogicalEntries: 3);
+        Assert.Equal(3, result.Count);
+        Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.ReadVerifiedTreeForTest(
+                root,
+                _ => overflow,
+                maximumLogicalEntries: 3));
+    }
+
+    [Fact]
+    public void VerifiedTreeTraversal_CountsRepeatedEmptyDirectorySubtrees()
+    {
+        var root = new string('0', 40);
+        var rootBytes = TreeObject(
+            ("40000", "a", (byte)0x11),
+            ("40000", "b", (byte)0x11),
+            ("40000", "c", (byte)0x11));
+        var reads = 0;
+
+        var result = PublicationReceiptGate.ReadVerifiedTreeForTest(
+            root,
+            id =>
+            {
+                reads++;
+                return id == root ? rootBytes : Array.Empty<byte>();
+            },
+            maximumLogicalEntries: 3);
+
+        Assert.Empty(result);
+        Assert.Equal(4, reads); // root plus all three repeated empty subtrees
+        Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.ReadVerifiedTreeForTest(
+                root,
+                id => id == root ? rootBytes : Array.Empty<byte>(),
+                maximumLogicalEntries: 2));
+    }
+
+    [Fact]
     public void ReadAuthorizedCommitSnapshot_IgnoresMutableGitTreeReplacement()
     {
         using var fixture = CreateFixture();

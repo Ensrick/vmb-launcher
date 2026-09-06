@@ -2,8 +2,53 @@
 # and isolated settings. No real VMB, Stingray, deploy, upload, SDK staging,
 # Steam, Workshop, or GUI action is reachable.
 
-param([string]$Exe = (Join-Path $PSScriptRoot '..\bin\Debug\net9.0-windows\VMBLauncher.exe'))
+param([string]$Exe)
 $ErrorActionPreference = 'Continue'
+if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\bin\TestHooks\Debug\net9.0-windows\VMBLauncher.exe' }
+# Only the isolated test graph recognizes the private mutex environment.
+# Refuse production/foreign executables before acquiring a mutex or writing files.
+$Exe = [IO.Path]::GetFullPath($Exe)
+$allowedExecutables = @('Debug', 'Release') | ForEach-Object {
+    [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\bin\TestHooks\$_\net9.0-windows\VMBLauncher.exe"))
+}
+if ($allowedExecutables -notcontains $Exe -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
+    Write-Host '[transaction_wrapper_smoke] FAILED: expected an existing isolated TestHooks Debug/Release executable.'
+    exit 2
+}
+
+function Remove-OwnedWrapperFixture {
+    param([string]$Root)
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $directories = [Collections.Generic.List[string]]::new()
+    $files = [Collections.Generic.List[string]]::new()
+    $directories.Add($rootPath)
+    function Assert-OwnedPath([string]$Path) {
+        $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+        if ($full -ne $rootPath -and -not $full.StartsWith($rootPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Wrapper fixture cleanup escaped its owned TEMP root.'
+        }
+        for ($current = $full; $current; $current = [IO.Path]::GetDirectoryName($current)) {
+            if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Wrapper fixture cleanup refuses reparse paths and ancestry.'
+            }
+        }
+    }
+    # Validate the entire census before any delete; do not traverse links.
+    for ($index = 0; $index -lt $directories.Count; $index++) {
+        Assert-OwnedPath $directories[$index]
+        foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directories[$index])) {
+            Assert-OwnedPath $entry
+            if (([IO.File]::GetAttributes($entry) -band [IO.FileAttributes]::Directory) -ne 0) {
+                $directories.Add($entry)
+            } else { $files.Add($entry) }
+        }
+    }
+    foreach ($file in $files) { Assert-OwnedPath $file; [IO.File]::Delete($file) }
+    for ($index = $directories.Count - 1; $index -ge 0; $index--) {
+        Assert-OwnedPath $directories[$index]
+        [IO.Directory]::Delete($directories[$index], $false)
+    }
+}
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('vmb-wrapper-join-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temp) | Out-Null
 $mutexName = 'Local\VMBLauncher.Tests.' + [guid]::NewGuid().ToString('N')
@@ -117,5 +162,8 @@ finally {
     $env:VMBLAUNCHER_TRANSACTION_TEST_MUTEX_NAME = $old.TestMutex
     if ($acquired) { try { $mutex.ReleaseMutex() } catch { } }
     $mutex.Dispose()
-    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
+    if (Test-Path -LiteralPath $temp) {
+        try { Remove-OwnedWrapperFixture $temp }
+        catch { Write-Warning "Wrapper fixture cleanup refused: $($_.Exception.Message)" -WarningAction Continue }
+    }
 }

@@ -37,7 +37,7 @@ internal sealed class MachineTransactionLease : IDisposable
         "VMBLauncher", "transaction_lease.json");
 
     internal static TransactionIdentity? CurrentIdentity => Current.Value?.Identity;
-    internal static int ActiveMutexThreadsForTest => DedicatedMutexThread.ActiveCount;
+
 
     /// <summary>
     /// Narrows a directly owned wildcard root after settings have been reloaded
@@ -120,7 +120,7 @@ internal sealed class MachineTransactionLease : IDisposable
     private static string ResolveMutexName(string? requested)
     {
         if (!string.IsNullOrWhiteSpace(requested)) return requested;
-#if DEBUG
+#if VMBLAUNCHER_TEST_HOOKS
         if (string.Equals(Environment.GetEnvironmentVariable(TestModeEnvironmentVariable), "1", StringComparison.Ordinal) &&
             Environment.GetEnvironmentVariable(TestMutexEnvironmentVariable) is string testName &&
             testName.StartsWith(@"Local\VMBLauncher.Tests.", StringComparison.Ordinal))
@@ -568,6 +568,10 @@ internal sealed class MachineTransactionLease : IDisposable
     [DllImport("ntdll.dll")]
     private static extern int NtQueryInformationProcess(IntPtr processHandle, int processInformationClass,
         out ProcessBasicInformation processInformation, int processInformationLength, out int returnLength);
+
+#if VMBLAUNCHER_TEST_HOOKS
+    internal static int ActiveMutexThreadsForTest => DedicatedMutexThread.ActiveCount;
+#endif
 }
 
 internal sealed class TransactionIdentity

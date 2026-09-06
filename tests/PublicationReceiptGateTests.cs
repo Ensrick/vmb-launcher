@@ -126,6 +126,78 @@ public class PublicationReceiptGateTests : MutationTestBase
     }
 
     [Fact]
+    public void AuthenticateHostedReceipt_RejectsOversizedCallerAndHostedBytesBeforeJsonParsing()
+    {
+        var oversized = new byte[PublicationReceiptGate.MaximumReceiptBytes + 1];
+
+        var callerError = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(
+                oversized,
+                Array.Empty<byte>()));
+        var hostedError = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(
+                Array.Empty<byte>(),
+                oversized));
+
+        Assert.Contains("Caller receipt", callerError.Message, StringComparison.Ordinal);
+        Assert.Contains("Hosted receipt", hostedError.Message, StringComparison.Ordinal);
+        Assert.Contains("8-MiB", callerError.Message, StringComparison.Ordinal);
+        Assert.Contains("8-MiB", hostedError.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AuthenticateHostedReceipt_RejectsOutputMapOver4096BeforeAuthorityFingerprinting()
+    {
+        var receipt = Receipt();
+        receipt.BundleFiles = Enumerable.Range(
+                0,
+                PublicationReceiptGate.MaximumSemanticMapEntries + 1)
+            .Select(index => new PublicationBundleFile
+            {
+                Path = $"{index:x16}.mod_bundle",
+                Length = 1,
+                Sha256 = new string('a', 64),
+                GitBlob = new string('b', 40),
+            })
+            .ToList();
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt);
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(bytes, bytes));
+
+        Assert.Contains("4096-entry", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AuthenticateHostedReceipt_RejectsOutputMapOver32GiBBeforeAuthorityFingerprinting()
+    {
+        var receipt = Receipt();
+        receipt.BundleFiles = new()
+        {
+            new PublicationBundleFile
+            {
+                Path = "modx.mod",
+                Length = PublicationReceiptGate.MaximumSemanticMapBytes,
+                Sha256 = new string('a', 64),
+                GitBlob = new string('b', 40),
+            },
+            new PublicationBundleFile
+            {
+                Path = "0123456789abcdef.mod_bundle",
+                Length = 1,
+                Sha256 = new string('c', 64),
+                GitBlob = new string('d', 40),
+            },
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt);
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            PublicationReceiptGate.AuthenticateHostedReceipt(bytes, bytes));
+
+        Assert.Contains("32-GiB", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void AuthenticateHostedReceipt_AcceptsExactExplicitReceiptAuthorityShape()
     {
         var receipt = Receipt();
@@ -195,6 +267,101 @@ public class PublicationReceiptGateTests : MutationTestBase
     public void EvaluateSnapshot_AcceptsExactHostedReceiptAndStaging()
     {
         Assert.True(Evaluate().Ok);
+    }
+
+    [Fact]
+    public void EvaluateCommitQualifiedSnapshot_AcceptsDistinctLocalDeployPurposeWithoutUploadStaging()
+    {
+        var receipt = Receipt();
+        receipt.Purpose = "local_deploy";
+        receipt.ReceiptAssetName = "deployment-receipt-modx.json";
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var file in receipt.BundleFiles) file.GitBlob = "";
+        var source = Bundles();
+        foreach (var file in source) file.GitBlob = "";
+
+        var result = PublicationReceiptGate.EvaluateCommitQualifiedSnapshot(
+            receipt,
+            Live(),
+            "modx",
+            "1.2.3-dev",
+            Owner,
+            Now,
+            ReceiptHash,
+            ReceiptHash,
+            new string('a', 64),
+            CfgBlob,
+            "123",
+            source,
+            Preview(),
+            "local_deploy",
+            MatchingClaim(),
+            ReceiptAuthorityProof());
+
+        Assert.True(result.Ok, result.Message);
+        Assert.Null(result.Verified);
+    }
+
+    [Fact]
+    public void EvaluateCommitQualifiedSnapshot_RejectsLocalDeployAssetForAnotherMod()
+    {
+        var receipt = Receipt();
+        receipt.Purpose = "local_deploy";
+        receipt.ReceiptAssetName = "deployment-receipt-other_mod.json";
+        receipt.BundleAuthority = "receipt";
+        receipt.BundleAuthorityProof = ReceiptAuthorityProof();
+        foreach (var file in receipt.BundleFiles) file.GitBlob = "";
+        var source = Bundles();
+        foreach (var file in source) file.GitBlob = "";
+
+        var result = PublicationReceiptGate.EvaluateCommitQualifiedSnapshot(
+            receipt,
+            Live(),
+            "modx",
+            "1.2.3-dev",
+            Owner,
+            Now,
+            ReceiptHash,
+            ReceiptHash,
+            new string('a', 64),
+            CfgBlob,
+            "123",
+            source,
+            Preview(),
+            "local_deploy",
+            MatchingClaim(),
+            ReceiptAuthorityProof());
+
+        Assert.False(result.Ok);
+        Assert.Contains("coordinates", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateCommitQualifiedSnapshot_RejectsPublicationAssetForLocalDeploy()
+    {
+        var receipt = Receipt();
+        receipt.Purpose = "local_deploy";
+
+        var result = PublicationReceiptGate.EvaluateCommitQualifiedSnapshot(
+            receipt,
+            Live(),
+            "modx",
+            "1.2.3-dev",
+            Owner,
+            Now,
+            ReceiptHash,
+            ReceiptHash,
+            new string('a', 64),
+            CfgBlob,
+            "123",
+            Bundles(),
+            Preview(),
+            "local_deploy",
+            MatchingClaim());
+
+        Assert.False(result.Ok);
+        Assert.Contains("coordinates", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

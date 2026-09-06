@@ -1,0 +1,89 @@
+name: QA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa-gate:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET 9
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Configure hermetic headless discovery fixture
+        shell: pwsh
+        run: |
+          $appData = Join-Path $env:RUNNER_TEMP 'vmb-launcher-appdata'
+          $project = Join-Path $env:RUNNER_TEMP 'vmb-launcher-project'
+          $vmbRoot = Join-Path $env:RUNNER_TEMP 'vmb-launcher-discovery-only'
+          $settingsDir = Join-Path $appData 'VMBLauncher'
+          New-Item -ItemType Directory -Force -Path $settingsDir, $project, $vmbRoot | Out-Null
+          # Locator presence only: deliberately NOT a runnable PE executable.
+          # Read-only list/info must never execute a VMB tool, even in CI.
+          [IO.File]::WriteAllText(
+            (Join-Path $vmbRoot 'vmb.exe'),
+            'DISCOVERY ONLY - NOT EXECUTABLE - MUST NEVER BE RUN',
+            [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText(
+            (Join-Path $project '.vmbrc'),
+            '{"mods_dir":"."}',
+            [Text.UTF8Encoding]::new($false))
+
+          foreach ($fixture in @(
+            @{ Name = 'general_tweaker'; Visibility = 'private'; Id = '1' },
+            @{ Name = 'chaos_wastes_tweaker'; Visibility = 'public'; Id = '2' }
+          )) {
+            $modDir = Join-Path $project $fixture.Name
+            New-Item -ItemType Directory -Force -Path $modDir | Out-Null
+            $cfg = @"
+          title = "$($fixture.Name)";
+          description = "Hosted QA discovery fixture";
+          visibility = "$($fixture.Visibility)";
+          published_id = $($fixture.Id)L;
+          content = "bundleV2";
+          preview = "item_preview.png";
+          "@
+            [IO.File]::WriteAllText(
+              (Join-Path $modDir 'itemV2.cfg'),
+              $cfg,
+              [Text.UTF8Encoding]::new($false))
+          }
+
+          $settings = @{
+            VmbRoot = $vmbRoot
+            ProjectRoot = $project
+            ConfirmedFirstRun = $true
+            RemoteDeployTargets = @()
+          } | ConvertTo-Json -Depth 4
+          [IO.File]::WriteAllText(
+            (Join-Path $settingsDir 'settings.json'),
+            $settings,
+            [Text.UTF8Encoding]::new($false))
+          "APPDATA=$appData" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Release test graph
+        shell: pwsh
+        run: dotnet test ./tests/VmbLauncher.Tests.csproj -c Release --nologo
+
+      - name: Canonical noninteractive publish verification
+        shell: pwsh
+        run: ./publish.ps1

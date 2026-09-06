@@ -66,6 +66,13 @@ public sealed class ModRunner
         => await DeployAsync(mod, skipRemote: false, ct);
 
     public async Task<RunOutcome> DeployAsync(ModInfo mod, bool skipRemote, CancellationToken ct = default)
+        => await DeployAsync(mod, skipRemote, deploymentReceiptPath: null, ct);
+
+    public async Task<RunOutcome> DeployAsync(
+        ModInfo mod,
+        bool skipRemote,
+        string? deploymentReceiptPath,
+        CancellationToken ct = default)
     {
         var project = _settings.ResolveMutationProject();
         if (project == null) return new RunOutcome(false, "Project folder not configured.");
@@ -76,6 +83,77 @@ public sealed class ModRunner
         var workshopRoot = _settings.WorkshopContentRoot;
         if (string.IsNullOrEmpty(workshopRoot))
             return new RunOutcome(false, "Workshop content folder not configured. Open Settings.");
+
+        // Availability recovery is deliberately independent of any new
+        // receipt/source. An old journal may only restore/finalize its own
+        // recorded namespace; a fresh receipt is authenticated separately
+        // below before any new forward exact-set deployment begins. Legacy
+        // deploy is subject to the same guard so it cannot mutate through an
+        // outstanding receipt-authority transaction.
+        var interrupted = LocalExactSetDeployment.RecoverInterruptedSafety(
+            workshopRoot,
+            mod.Name,
+            L);
+        if (!interrupted.Ok)
+            return new RunOutcome(false,
+                $"[receipt-deploy-recovery] REFUSING deploy: {interrupted.Message}");
+
+        // Receipt-authority deploy is a separate canonical-ship lane. Its
+        // hosted receipt selects the immutable commit-qualified output map and
+        // published ID; mutable cfg fields and WorkshopIdOverrides are never
+        // byte or destination authority. Remote exact-set reconciliation is a
+        // later capability, so this lane requires an explicit --no-remote.
+        if (deploymentReceiptPath != null)
+        {
+            if (string.IsNullOrWhiteSpace(deploymentReceiptPath))
+                return new RunOutcome(false,
+                    "Receipt-authority local deploy requires one nonempty deployment receipt path.");
+            if (!skipRemote)
+                return new RunOutcome(false,
+                    "Receipt-authority local deploy requires --no-remote; remote exact-set deployment is not implemented.");
+            var authorization = PublicationReceiptGate.AuthorizeReceiptAuthorityExpectedSet(
+                deploymentReceiptPath,
+                mod,
+                project.Root,
+                DateTime.UtcNow);
+            if (!authorization.Ok || authorization.Verified == null)
+                return new RunOutcome(false,
+                    $"[receipt-deploy-gate] REFUSING local deploy: {authorization.Message}");
+            try
+            {
+                var verified = authorization.Verified;
+                var source = ImmutableBundleSourceLease.Capture(
+                    mod.BundleV2Dir,
+                    verified.Mod,
+                    verified.Files);
+                try
+                {
+                    L($"[receipt-deploy-gate] OK - {authorization.Message}");
+                    return LocalExactSetDeployment.Reconcile(
+                        Path.Combine(workshopRoot, verified.PublishedId),
+                        verified,
+                        source,
+                        L);
+                }
+                finally
+                {
+                    try { source.Dispose(); }
+                    catch (Exception disposeFailure)
+                    {
+                        try
+                        {
+                            L($"[receipt-deploy-gate] WARNING - source lease release reported after transaction outcome: {disposeFailure.Message}");
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new RunOutcome(false,
+                    $"[receipt-deploy-gate] REFUSING local deploy: {ex.Message}");
+            }
+        }
 
         var id = ResolveWorkshopId(mod);
         if (string.IsNullOrEmpty(id))

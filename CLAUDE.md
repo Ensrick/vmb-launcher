@@ -30,6 +30,27 @@ receipt bytes hosted on the canonical GitHub release by the monorepo's
 `tools\ship\ship.ps1` transaction. Caller-authored JSON is not authority. GUI
 Upload and Build+Deploy+Upload are intentionally non-publishing.
 
+`--deployment-receipt` is a separate internal, canonical-ship-only input. It is
+accepted exactly once, with one nonempty path, only for
+`deploy <mod> --no-remote`. The hosted schema-3 receipt selects the committed
+positive `published_id` and exact output set; the launcher proves and pins the
+matching local `bundleV2` bytes before replacing that one owned local Workshop
+directory. Missing, empty, duplicate, caller-authored, or invalid receipt
+authority fails before any new forward deployment and must never fall through
+to ordinary deploy. Before authenticating that new receipt or opening source
+bytes, deploy restores/finalizes any interrupted exact-set transaction for the
+mod from only its durable journal, recorded physical identities, and byte maps;
+ordinary deploy cannot bypass that recovery, even if the project, mod, or
+source has since disappeared. The bounded two-slot checksummed journal has no
+replace-temp ownership gap. Never infer ownership from a reserved name,
+emptiness, or matching bytes: pre-commit mixed membership must be quarantined
+while the exact prior set is restored, and post-commit mixed membership must be
+preserved while cleanup blocks. Re-authenticating the same short-lived hosted
+receipt may idempotently install only the same exact set.
+Single-consume applies to each in-memory authorization object, not as a durable
+replay ledger. Do not pass this flag from ad hoc scripts, the GUI, or direct
+developer deploys.
+
 Global flags:
 
 - `--no-banner` — suppress the `vmblauncher X.Y.Z (headless)` banner. Use whenever piping output to another tool.
@@ -66,9 +87,13 @@ strict schema-3 build receipt, source-blob/build-byte map, normalized output
 map, exact executing builder, and normalization policy. Generated bundle records carry exact
 path/length/SHA-256 and no Git-blob claim; the complete map must match the
 pinned SDK staging bytes. The `receipt-authority-publication-v1` capability
-advertises this boundary. It does not enable receipt-authority deploy, updater,
-recovery, GUI publication, or first-upload bootstrap. Tracked hosted receipts
-retain their exact legacy top-level contract and Git-blob path.
+advertises the publication boundary. The separate
+`receipt-authority-local-deploy-v1` capability and
+`deployment_receipt_schema=3` advertise canonical ship's LOCAL-only exact-set
+deploy boundary. They do not authorize remote exact-set deployment, updater
+installation, a separate updater/recovery consumer, GUI receipt deployment, or
+first-upload bootstrap. Tracked hosted receipts retain their exact legacy
+top-level contract and Git-blob path.
 
 **Test refresh (user ruling 2026-07-13):** the author on PC-A tests the
 hash-verified local deploy and does not need to restart Steam. Volunteer testers
@@ -99,6 +124,39 @@ failure into a warning. The only legacy inference lane recognizes the exact
 v0.5.9 launcher DENY on `sample_item`/`content`; any ambiguity fails closed.
 Both directories must carry the exact ACE, and every deeper exact-looking ACE
 must reconstruct its immediate parent's Access semantics before any write.
+
+New schema-2 upload ACL records explicitly include Owner, Group and Access.
+Full-identity comparison preserves owner/group, descriptor revision/resource
+byte, every ordered ACL byte and all control bits except the documented
+monotonic `SE_DACL_AUTO_INHERITED` transition from zero to one. Windows can set
+that marker while applying an otherwise unchanged DACL. Old ownerless schema-2
+records retain exact Access-only byte matching; never infer historical owners
+from the current directory or journal process SID. Recovery validates all rows
+before any write, rechecks at each write and verifies the final restored census
+before removing the journal. The local exact-set membership owner's stricter
+current-user requirement is independent and unchanged.
+
+Local exact-set membership seals use a directional observed-versus-recorded
+comparison at preconditions, postconditions, Resume and Restore: Windows may
+add `SE_DACL_AUTO_INHERITED` (`0 -> 1`) while owner/group, byte-exact ordered
+DACL and every other validated DACL control flag remain unchanged. Clearing
+that marker is not permitted. Recorded plan equality, deterministic seal
+recomputation and original-versus-sealed distinction stay strict; never use the
+readback allowance to accept a modified journal plan. Tests exercise actual
+NTFS Prepare/Resume/Apply/Restore with both recorded marker bits cleared,
+failed-apply restoration, and independent descriptor/plan tampering.
+
+Hosted fixture detail: fresh directories may start with or without that marker.
+Explicit marker tests establish it with real native persistence only on an empty
+TempDir-owned directory, before creating descendants. Root and descendant
+post-write assertions independently compare every descriptor byte, allowing only
+that documented `0 -> 1` control-bit change; initial no-write assertions remain
+byte-exact. This accounts for Windows' [inheritance-model conversion](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces),
+not permission equivalence or a waiver for propagated/reordered ACEs. Tests must
+not call the production comparator as their oracle. Oversized byte-bound tests
+use [FSCTL_SET_SPARSE](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_sparse)
+before growing a file, verify bounded allocation, and fail before any hashing;
+never reserve tens of GiB on the hosted runner's disk for a boundary fixture.
 
 The launcher joins a named kill-on-close Windows Job before mutation. Its
 schema-2 owner record persists that exact Job name. After hard owner death, a
@@ -248,6 +306,12 @@ Note: per the SDK README, the canonical visibility values are `"private"`, `"fri
 ## Remote deploy targets
 
 `deploy` (and the `deploy` step inside `all`) push the bundle to every enabled remote machine in `settings.json` immediately after the local Workshop-folder copy completes. This is the default — opt out per-invocation with `--no-remote`. The standing rule (`feedback_deploy_both_machines.md`) is that iterative VT2 debugging must keep the test client in lockstep with the host; the launcher enforces it so individual workflows can't forget.
+
+This default describes ordinary iterative deployment. Receipt-authority
+exact-set deploy is a canonical-ship-only LOCAL lane and therefore requires
+both `--deployment-receipt <path>` and `--no-remote`. It must never enter the
+legacy remote-push path. Remote exact-set deployment remains a later,
+separately reviewed capability.
 
 Config schema (`%APPDATA%\VMBLauncher\settings.json`):
 
@@ -704,13 +768,34 @@ cd C:\Users\danjo\source\repos\vermintide-2-tweaker\tools\vmb-launcher
 The release binary lands at `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe`. The user typically copies it to `~/Downloads/` for distribution.
 
 **Headless-first rebuild guarantee.** Default `publish.ps1`, `test.ps1`, and
-`tests/headless_smoke.ps1` never launch WPF or Explorer and never execute
-`build`, `deploy`, `upload`, or `all`. GUI routing lives only in
+`tests/headless_smoke.ps1` never launch WPF or Explorer and never execute real
+mod build, deploy or upload actions. GUI routing lives only in
 `tests/gui_smoke.ps1 -Interactive`; real local build/deploy integration lives
 only in `tests/action_smoke.ps1 -IntegrationActions`. Never run either opt-in
 suite from agent, headless, CI, or publication verification.
 `tests/check_noninteractive_contract.ps1` guards this split with planted-failure
 coverage and runs from `test.ps1`.
+
+`test.ps1` explicitly selects the Debug test graph, then runs the transaction
+wrapper fixture against its exact `bin/TestHooks/Debug/net9.0-windows` executable.
+That fixture exercises only parent-lease joining with a fake VMB executable,
+temporary settings and a random private test mutex. Its test-only environment
+is restored, probes stay hidden, and cleanup validates paths before deleting
+individual files/empty directories. It refuses normal production or foreign
+executables before setup. Never build a normal Debug binary to satisfy this
+fixture: production Debug and Release deliberately exclude the private mutex
+hooks. The later `publish.ps1` production build and published-binary
+`headless_smoke.ps1` remain separate and unchanged. Clean-checkout orchestration
+fixtures must prove this order without any pre-existing normal `bin/Debug`.
+
+Hosted read-only discovery supplies an explicit temporary `VmbRoot` as well as
+`ProjectRoot`. The former contains only a non-executable `vmb.exe` presence
+marker, never a downloaded or runnable tool. Current list/info preflight
+requires that locator evidence; an existing empty VMB directory must continue
+to fail with exit 3. The real CLI is exercised with `--config` bound to these
+fixture settings, and the exact hosted setup plus file preservation is tested.
+Do not relax production discovery or provide real SDK/Steam/action prerequisites
+to make a read-only verification fixture pass.
 
 The default headless smoke clones launcher settings to a temporary isolated
 config, passes `--config` on every invocation, proves the real default settings

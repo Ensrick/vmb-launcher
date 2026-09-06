@@ -153,8 +153,8 @@ internal static class ProcessTreeGuard
         return StartBreakawayProcess(explorer, arguments, createNoWindow: false);
     }
 
-#if DEBUG
-    /// <summary>Debug-fixture entry point; arbitrary breakaway is absent from Release builds.</summary>
+#if VMBLAUNCHER_TEST_HOOKS
+    /// <summary>Test-fixture entry point; arbitrary breakaway is absent from shipping builds.</summary>
     internal static Process StartBreakawayProcessForTest(
         string fullPath, IEnumerable<string> arguments, bool createNoWindow = true)
     {
@@ -247,7 +247,7 @@ internal static class ProcessTreeGuard
         finally { Marshal.FreeHGlobal(memory); }
     }
 
-#if DEBUG
+#if VMBLAUNCHER_TEST_HOOKS
     internal static IDisposable CreateOrdinarilyEmptiedJobForTest(
         string jobName, string fullPath, IEnumerable<string> arguments)
     {

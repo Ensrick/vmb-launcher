@@ -1,5 +1,122 @@
 # VMB Launcher Changelog
 
+## v0.6.2 (2026-08-26)
+
+### Test graph corrections (#1429, unreleased)
+
+- Hosted read-only discovery now explicitly binds a separate temporary VMB
+  directory containing only a deliberately non-executable presence marker.
+  Actual CLI tests run the hosted setup, prove list/info succeed without running
+  a tool, and prove the same configured directory without that marker is still
+  rejected by production preflight. Fixture and default-settings bytes stay
+  unchanged; no Steam, SDK, build, deploy or upload prerequisite is fabricated.
+- Canonical test verification explicitly builds the Debug test graph and passes
+  its `bin/TestHooks/Debug` executable to the private-mutex wrapper fixture.
+  The fixture refuses normal production/foreign executables before setup; a
+  clean checkout no longer depends on a stale `bin/Debug` binary. Behavioral
+  orchestration tests cover success, failed tests and missing output on both
+  PowerShell hosts; evaluated Debug/Release compiler graphs keep test hooks out
+  of shipping code. Published-binary headless verification remains unchanged.
+- Machine-lease fixtures resolve their worker from the active test assembly's
+  build configuration instead of hardcoding Debug. Mutation-census fixtures
+  read the matching `obj/TestHooks/<configuration>/net9.0-windows` generated
+  semantic support, retaining all exact census and unresolved-symbol checks.
+- Temporary test cleanup validates its owned paths and rejects links before
+  deleting individual files and empty directories; no recursive deletion or
+  permission repair is used.
+- The repeated abandoned-owner fixture now retains a non-owning mutex handle,
+  terminates its exact acquired owner without crash-reporting delay, and checks
+  the exact missing-authority refusal for two fresh contenders. A stack-trace
+  parameter named `wasAbandoned` is no longer accepted as refusal evidence.
+- These fixture-path corrections do not relax production ownership, ACL,
+  receipt or publication gates and do not resolve the separate Steam SDK crash.
+- Two existing positive ACL fixtures now capture bounded owner/SID and durable
+  versus readback security-descriptor diagnostics for hosted failures. Their
+  assertions and production permission/recovery policy are unchanged.
+- Hosted evidence then identified two separate causes: Administrators-group
+  default ownership in positive fixtures, and Windows' unchanged-DACL
+  `SE_DACL_AUTO_INHERITED` readback marker. Test executables now establish their
+  own existing user SID as TokenOwner before creating fixtures, including
+  production-created stage children; user/groups/privileges are rechecked.
+  No existing ACL is repaired and no production ownership guard is relaxed.
+- Follow-on hosted fixtures no longer assume newly created directories already
+  have the auto-inherited marker. The two explicit marker scenarios persist an
+  unchanged DACL natively inside an empty TempDir-owned directory before capture.
+  Post-native-write root/descendant assertions use an independent byte oracle:
+  only the one documented marker bit may advance, never owner, ACE or other flags.
+- The 32-GiB byte-bound fixture now uses an authentic NTFS sparse file with a
+  logical length of 32 GiB plus one byte and at most 1 MiB physical allocation.
+  Any entry into the destination hash phase throws and fails the fixture; the
+  production byte bound remains unchanged.
+
+### Fixed: recorded upload ACL comparison (#1429, unreleased)
+
+- New upload journals explicitly capture Owner, Group and Access. Full-identity
+  recovery compares recorded owner/group, descriptor metadata and byte-exact
+  ordered ACLs; only Windows' documented `0 -> 1` auto-inherited marker may
+  differ. Permission, protection, identity and ACE-order drift still fail closed.
+- Old schema-2 ownerless records retain their exact Access-byte comparison;
+  missing historical owner authority is never fabricated. Legacy inference
+  retains its exact launcher-DENY and parent/child semantics prerequisites.
+- Recovery validates the whole census before writing, rechecks each identity
+  and descriptor before restoration, verifies readback, then checks all restored
+  directories again before removing the journal. Refusal preserves the journal.
+- Focused tests cover the hosted descriptor shape, old ownerless records,
+  monotonic marker changes, owner/group/ACE/control tampering and a last-row
+  mismatch which must not partially restore the first directory. These changes
+  remain an uninstalled launcher candidate, not a Steam SDK crash fix.
+
+### Fixed: local exact-set membership readback (#1429, unreleased)
+
+- Hosted recovery failures independently reproduced with an authentic NTFS
+  descriptor and journal plan differing only by Windows' auto-inherited marker.
+  Membership readback now permits only the directional recorded `0` to observed
+  `1` marker change; owner/group, ordered DACL bytes and all other validated
+  DACL control flags still match exactly.
+- Durable plan equality and deterministic plan recomputation remain strict.
+  This does not change the current-user directory-owner requirement, the upload
+  ownerless-journal lane, or any receipt/publication permission.
+- Tests run real Prepare, Resume, Apply, crash-style Resume and Restore with
+  marker-free recorded plans, prove failed-apply restoration preserves its
+  original exception, and reject inverse-marker, plan, identity and ACE drift.
+  No launcher installation or Workshop publication is implied by these tests.
+
+### Added: receipt-authority local exact-set deployment (#1429)
+
+- Canonical ship may supply its distinct hosted `--deployment-receipt` only to
+  `deploy --no-remote`. Missing, empty, duplicate, caller-authored, expired, or
+  otherwise invalid receipt authority fails before any new forward deployment
+  and can never fall through to the ordinary deploy path.
+- The hosted/live/claim/schema-3 proof selects the committed positive
+  `published_id` and one canonical filename/length/SHA-256 output map. Mutable
+  cfg overrides and unqualified local files are not destination or byte
+  authority.
+- The launcher proves and pins the matching local `bundleV2` source bytes with
+  restrictive handles, then replaces exactly one owned local Workshop item
+  directory through a journaled same-volume transaction with verification and
+  rollback.
+- Before authenticating new forward authority or opening source bytes, every
+  deploy first restores/finalizes any exact journal-bound transaction for that
+  mod. Recovery uses only recorded physical identities and exact byte maps, so
+  an expired receipt, removed source, or missing project/mod cannot leave the
+  subscribed target absent. A fixed-size two-slot checksummed journal,
+  full physical directory/per-file identities, parent-handle-relative renames,
+  and handle-bound cleanup make every recorded crash window retryable.
+- Objects created before their physical identity becomes durable are never
+  adopted or deleted after a crash. Unexpected membership before durable
+  commit is preserved in a transaction-bound quarantine while the exact prior
+  deployment is restored; unexpected membership after durable commit is
+  preserved and blocks cleanup for explicit review.
+- Re-authenticating the same short-lived hosted receipt may idempotently deploy
+  only the same mod/workshop/source/output set. A single in-memory verified
+  authorization object is consumed once; this is not a durable replay ledger.
+- `deployment_receipt_schema=3` and
+  `receipt-authority-local-deploy-v1` advertise this separate boundary.
+  Receipt authority has not been extended to remote deployment, updater
+  installation, or a separate updater/recovery consumer. Ordinary tracked and
+  legacy copying remains unchanged, but both lanes refuse to bypass an
+  outstanding receipt-authority recovery.
+
 ## v0.6.1 (2026-08-26)
 
 ### Added: fail-closed publication for receipt-authority bundles (#1426)
