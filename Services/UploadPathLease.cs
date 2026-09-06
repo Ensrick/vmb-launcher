@@ -374,7 +374,7 @@ internal sealed partial class UploadPathLease : IDisposable
             VolumeSerialNumber = identity.VolumeSerialNumber;
             FileId = ((ulong)identity.FileIndexHigh << 32) | identity.FileIndexLow;
             var security = FileSystemAclExtensions.GetAccessControl(
-                new DirectoryInfo(_path), AccessControlSections.Access);
+                new DirectoryInfo(_path), AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
             _originalDescriptor = security.GetSecurityDescriptorBinaryForm();
             security.AddAccessRule(CreateLauncherDenyRule());
             _frozenDescriptor = security.GetSecurityDescriptorBinaryForm();
@@ -530,9 +530,11 @@ internal sealed partial class UploadPathLease : IDisposable
                         $"Refusing upload ACL recovery: '{path}' no longer names the recorded volume/file identity.");
                 var original = Convert.FromBase64String(entry.OriginalDescriptor);
                 var frozen = Convert.FromBase64String(entry.FrozenDescriptor);
-                var current = GetDescriptor(path);
-                if (current.SequenceEqual(original)) continue;
-                if (!current.SequenceEqual(frozen))
+                if (!UploadAclDescriptor.SameRecordedIdentity(original, frozen))
+                    throw new InvalidDataException("Refusing upload ACL recovery: descriptor identity authority differs.");
+                var current = GetDescriptor(path, original);
+                if (UploadAclDescriptor.Matches(original, current)) continue;
+                if (!UploadAclDescriptor.Matches(frozen, current))
                     throw new InvalidDataException(
                         $"Refusing upload ACL recovery: '{path}' drifted from both the recorded original and exact launcher-owned descriptor.");
             }
@@ -541,8 +543,28 @@ internal sealed partial class UploadPathLease : IDisposable
             {
                 var path = Normalize(entry.Path);
                 var original = Convert.FromBase64String(entry.OriginalDescriptor);
-                if (!GetDescriptor(path).SequenceEqual(original))
+                var frozen = Convert.FromBase64String(entry.FrozenDescriptor);
+                EnsureNoReparsePoint(expectedRoot, path);
+                var identity = GetDirectoryIdentity(path);
+                var current = GetDescriptor(path, original);
+                if (identity.VolumeSerialNumber != entry.VolumeSerialNumber || identity.FileId != entry.FileId ||
+                    (!UploadAclDescriptor.Matches(original, current) && !UploadAclDescriptor.Matches(frozen, current)))
+                    throw new InvalidDataException("Refusing upload ACL recovery: directory changed after validation.");
+                if (!UploadAclDescriptor.Matches(original, current))
                     SetDescriptor(path, original);
+                if (!UploadAclDescriptor.Matches(original, GetDescriptor(path, original)))
+                    throw new InvalidDataException("Refusing upload ACL recovery: original ACL restoration was not observed.");
+            }
+            // A later parent's inherited-ACL propagation must not silently undo
+            // an earlier child's restoration. Retain the journal on any drift.
+            foreach (var entry in journal.Entries)
+            {
+                EnsureNoReparsePoint(expectedRoot, entry.Path);
+                var identity = GetDirectoryIdentity(entry.Path);
+                var original = Convert.FromBase64String(entry.OriginalDescriptor);
+                if (identity.VolumeSerialNumber != entry.VolumeSerialNumber || identity.FileId != entry.FileId ||
+                    !UploadAclDescriptor.Matches(original, GetDescriptor(entry.Path, original)))
+                    throw new InvalidDataException("Refusing upload ACL recovery: final restoration census failed.");
             }
             File.Delete(journalPath);
             log?.Invoke(
@@ -564,7 +586,8 @@ internal sealed partial class UploadPathLease : IDisposable
             {
                 EnsureNoReparsePoint(stagingRoot, path);
                 var info = new DirectoryInfo(path);
-                var security = FileSystemAclExtensions.GetAccessControl(info, AccessControlSections.Access);
+                var security = FileSystemAclExtensions.GetAccessControl(info,
+                    AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
                 var explicitCurrentUserDenies = security
                     .GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
                     .Cast<FileSystemAccessRule>()
@@ -675,7 +698,8 @@ internal sealed partial class UploadPathLease : IDisposable
             catch { }
             if (journal != null && journal.Entries.All(entry =>
                     Directory.Exists(entry.Path) &&
-                    GetDescriptor(entry.Path).SequenceEqual(Convert.FromBase64String(entry.OriginalDescriptor))))
+                    UploadAclDescriptor.Matches(Convert.FromBase64String(entry.OriginalDescriptor),
+                        GetDescriptor(entry.Path, Convert.FromBase64String(entry.OriginalDescriptor)))))
                 File.Delete(path);
         }
 
@@ -751,9 +775,11 @@ internal sealed partial class UploadPathLease : IDisposable
                 ((ulong)identity.FileIndexHigh << 32) | identity.FileIndexLow);
         }
 
-        private static byte[] GetDescriptor(string path) =>
+        private static byte[] GetDescriptor(string path, byte[] authority) =>
             FileSystemAclExtensions.GetAccessControl(
-                new DirectoryInfo(path), AccessControlSections.Access)
+                new DirectoryInfo(path), UploadAclDescriptor.HasRecordedIdentity(authority)
+                    ? AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access
+                    : AccessControlSections.Access)
                 .GetSecurityDescriptorBinaryForm();
 
         private static string AccessSddl(byte[] descriptor)

@@ -33,16 +33,16 @@ public class UploadPathLeaseTests
         var cfg = tmp.Write(@"uploader\sample_item\item.cfg", "content = \"content\";");
         tmp.Write(@"uploader\sample_item\content\modx.mod", "bundle-v1");
         var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
-        var originalStaging = GetAclBytes(staging);
-        var originalContent = GetAclBytes(content);
+        var originalStaging = GetFullAclBytes(staging);
+        var originalContent = GetFullAclBytes(content);
 
         var crashed = Capture(
             new StagedUpload(staging, cfg, "preview.jpg", 1), tool);
         crashed.AbandonForCrashFixture();
 
         WriteJournalDescriptorDiagnostics(tmp.Path, staging, content);
-        Assert.False(GetAclBytes(staging).SequenceEqual(originalStaging));
-        Assert.False(GetAclBytes(content).SequenceEqual(originalContent));
+        Assert.False(GetFullAclBytes(staging).SequenceEqual(originalStaging));
+        Assert.False(GetFullAclBytes(content).SequenceEqual(originalContent));
 
         var record = System.IO.Path.Combine(tmp.Path, "transaction.json");
         using (MachineTransactionLease.Enter(
@@ -56,8 +56,8 @@ public class UploadPathLeaseTests
             UploadPathLease.RecoverStaleAclLease(tool);
         }
 
-        Assert.Equal(originalStaging, GetAclBytes(staging));
-        Assert.Equal(originalContent, GetAclBytes(content));
+        AssertRestored(originalStaging, staging);
+        AssertRestored(originalContent, content);
         File.WriteAllText(System.IO.Path.Combine(content, "next-stage.mod"), "ok");
     }
 
@@ -135,9 +135,9 @@ public class UploadPathLeaseTests
         var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
         var originals = new Dictionary<string, byte[]>
         {
-            [staging] = GetAclBytes(staging),
-            [content] = GetAclBytes(content),
-            [nested] = GetAclBytes(nested),
+            [staging] = GetFullAclBytes(staging),
+            [content] = GetFullAclBytes(content),
+            [nested] = GetFullAclBytes(nested),
         };
 
         var crashed = Capture(
@@ -153,7 +153,7 @@ public class UploadPathLeaseTests
         }
 
         foreach (var pair in originals)
-            Assert.Equal(pair.Value, GetAclBytes(pair.Key));
+            AssertRestored(pair.Value, pair.Key);
     }
 
     [Fact]
@@ -167,7 +167,7 @@ public class UploadPathLeaseTests
         tmp.Write(@"uploader\sample_item\content\nested\deeper\modx.mod", "bundle-v1");
         var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
         var originals = new[] { staging, content, Path.GetDirectoryName(nested)!, nested }
-            .ToDictionary(path => path, GetAclBytes);
+            .ToDictionary(path => path, GetFullAclBytes);
 
         var crashed = Capture(
             new StagedUpload(staging, cfg, "preview.jpg", 1), tool);
@@ -180,7 +180,7 @@ public class UploadPathLeaseTests
             mutexName: @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N")))
             UploadPathLease.RecoverStaleAclLease(tool);
 
-        foreach (var pair in originals) Assert.Equal(pair.Value, GetAclBytes(pair.Key));
+        foreach (var pair in originals) AssertRestored(pair.Value, pair.Key);
     }
 
     [Fact]
@@ -222,8 +222,8 @@ public class UploadPathLeaseTests
         var cfg = tmp.Write(@"uploader\sample_item\item.cfg", "content = \"content\";");
         tmp.Write(@"uploader\sample_item\content\modx.mod", "bundle-v1");
         var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
-        var rootAcl = GetAclBytes(staging);
-        var contentAcl = GetAclBytes(content);
+        var rootAcl = GetFullAclBytes(staging);
+        var contentAcl = GetFullAclBytes(content);
         var mutex = @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N");
         var record = Path.Combine(tmp.Path, "transaction.json");
 
@@ -239,8 +239,8 @@ public class UploadPathLeaseTests
             "new-upload", "modx", tmp.Path, recordPath: record, mutexName: mutex))
             UploadPathLease.RecoverStaleAclLease(tool);
 
-        Assert.Equal(rootAcl, GetAclBytes(staging));
-        Assert.Equal(contentAcl, GetAclBytes(content));
+        AssertRestored(rootAcl, staging);
+        AssertRestored(contentAcl, content);
     }
 
     [Theory]
@@ -449,6 +449,129 @@ public class UploadPathLeaseTests
             new DirectoryInfo(path),
             System.Security.AccessControl.AccessControlSections.Access)
         .GetSecurityDescriptorBinaryForm();
+
+    private static byte[] GetFullAclBytes(string path) =>
+        FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path),
+            AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access)
+            .GetSecurityDescriptorBinaryForm();
+
+    private static void AssertRestored(byte[] expectedBytes, string path)
+    {
+        // Independently assert all recorded components, not the production
+        // predicate. Windows may retain only the documented 0->1 AI marker.
+        var actualBytes = GetFullAclBytes(path);
+        var expected = new RawSecurityDescriptor(expectedBytes, 0);
+        var actual = new RawSecurityDescriptor(actualBytes, 0);
+        Assert.Equal(expected.Owner, actual.Owner);
+        Assert.Equal(expected.Group, actual.Group);
+        Assert.Equal(expectedBytes[0], actualBytes[0]);
+        Assert.Equal(expectedBytes[1], actualBytes[1]);
+        Assert.True(actual.ControlFlags == expected.ControlFlags ||
+            actual.ControlFlags == (expected.ControlFlags | ControlFlags.DiscretionaryAclAutoInherited));
+        Assert.NotNull(expected.DiscretionaryAcl);
+        Assert.NotNull(actual.DiscretionaryAcl);
+        var left = new byte[expected.DiscretionaryAcl.BinaryLength];
+        var right = new byte[actual.DiscretionaryAcl.BinaryLength];
+        expected.DiscretionaryAcl.GetBinaryForm(left, 0);
+        actual.DiscretionaryAcl.GetBinaryForm(right, 0);
+        Assert.Equal(left, right);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RecoveryReadsFullIdentityAndPreservesExactOwnerlessSchema2(bool oldOwnerless)
+    {
+        using var tmp = new TempDir();
+        var staging = tmp.CreateSubdir(@"uploader\sample_item");
+        var content = tmp.CreateSubdir(@"uploader\sample_item\content");
+        var cfg = tmp.Write(@"uploader\sample_item\item.cfg", "content = \"content\";");
+        tmp.Write(@"uploader\sample_item\content\modx.mod", "bundle-v1");
+        var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
+        var original = GetFullAclBytes(staging);
+        var crashed = Capture(new StagedUpload(staging, cfg, "preview.jpg", 1), tool);
+        crashed.AbandonForCrashFixture();
+        var journalPath = Path.Combine(tmp.Path, "uploader", ".vmblauncher-upload-acl-lease.json");
+        var journal = JsonNode.Parse(File.ReadAllText(journalPath))!;
+        Assert.Equal(2, journal["schema"]!.GetValue<int>());
+        foreach (var entry in journal["entries"]!.AsArray())
+        {
+            foreach (var field in new[] { "original_descriptor", "frozen_descriptor" })
+            {
+                var descriptor = new RawSecurityDescriptor(Convert.FromBase64String(entry![field]!.GetValue<string>()), 0);
+                Assert.NotNull(descriptor.Owner);
+                Assert.NotNull(descriptor.Group);
+                if (oldOwnerless)
+                {
+                    // Model the actually-supported old Access-only/AI journal
+                    // shape; no authority is added by production recovery.
+                    descriptor.Owner = null;
+                    descriptor.Group = null;
+                    descriptor.SetFlags(descriptor.ControlFlags | ControlFlags.DiscretionaryAclAutoInherited);
+                }
+                else
+                    descriptor.SetFlags(descriptor.ControlFlags & ~ControlFlags.DiscretionaryAclAutoInherited);
+                var bytes = new byte[descriptor.BinaryLength];
+                descriptor.GetBinaryForm(bytes, 0);
+                entry[field] = Convert.ToBase64String(bytes);
+            }
+        }
+        File.WriteAllText(journalPath, journal.ToJsonString());
+        using var lease = MachineTransactionLease.Enter("upload", "modx", tmp.Path,
+            recordPath: Path.Combine(tmp.Path, "owner.json"),
+            mutexName: @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N"));
+        UploadPathLease.RecoverStaleAclLease(tool);
+        AssertRestored(original, staging);
+        Assert.False(File.Exists(journalPath));
+        File.WriteAllText(Path.Combine(content, "next.mod"), "recovered");
+    }
+
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("group")]
+    public void LastDirectoryIdentityDriftRejectsWholeCensusBeforeAnyWrite(string field)
+    {
+        using var tmp = new TempDir();
+        var staging = tmp.CreateSubdir(@"uploader\sample_item");
+        var content = tmp.CreateSubdir(@"uploader\sample_item\content");
+        var cfg = tmp.Write(@"uploader\sample_item\item.cfg", "content = \"content\";");
+        tmp.Write(@"uploader\sample_item\content\modx.mod", "bundle-v1");
+        var tool = tmp.Write(@"uploader\ugc_tool.exe", "tool-v1");
+        var crashed = Capture(new StagedUpload(staging, cfg, "preview.jpg", 1), tool);
+        crashed.AbandonForCrashFixture();
+        var journalPath = Path.Combine(tmp.Path, "uploader", ".vmblauncher-upload-acl-lease.json");
+        var realJournal = File.ReadAllText(journalPath);
+        var journal = JsonNode.Parse(realJournal)!;
+        var last = journal["entries"]!.AsArray().Last()!;
+        foreach (var key in new[] { "original_descriptor", "frozen_descriptor" })
+        {
+            var descriptor = new RawSecurityDescriptor(Convert.FromBase64String(last[key]!.GetValue<string>()), 0);
+            var foreign = new SecurityIdentifier("S-1-5-21-111-222-333-444");
+            if (field == "owner") descriptor.Owner = foreign;
+            else descriptor.Group = foreign;
+            var bytes = new byte[descriptor.BinaryLength];
+            descriptor.GetBinaryForm(bytes, 0);
+            last[key] = Convert.ToBase64String(bytes);
+        }
+        File.WriteAllText(journalPath, journal.ToJsonString());
+        var frozenRoot = GetFullAclBytes(staging);
+        var frozenChild = GetFullAclBytes(content);
+        using var lease = MachineTransactionLease.Enter("upload", "modx", tmp.Path,
+            recordPath: Path.Combine(tmp.Path, "owner.json"),
+            mutexName: @"Local\VMBLauncher.Tests." + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.Throws<InvalidDataException>(() => UploadPathLease.RecoverStaleAclLease(tool));
+            Assert.Equal(frozenRoot, GetFullAclBytes(staging));
+            Assert.Equal(frozenChild, GetFullAclBytes(content));
+            Assert.True(File.Exists(journalPath));
+        }
+        finally
+        {
+            File.WriteAllText(journalPath, realJournal);
+            UploadPathLease.RecoverStaleAclLease(tool);
+        }
+    }
 
     [Fact]
     public void Capture_BlocksCfgContentPreviewAndToolMutation()

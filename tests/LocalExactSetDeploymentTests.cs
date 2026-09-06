@@ -71,6 +71,13 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             var parentIdentity = ImmutableBundleSourceLease.InspectDirectory(fixture.Parent);
             Assert.Equal(targetIdentity.VolumeSerialNumber, stageIdentity.VolumeSerialNumber);
             Assert.Equal(parentIdentity.VolumeSerialNumber, stageIdentity.VolumeSerialNumber);
+            // The stage is created by the production namespace primitive, not
+            // TempDir. Test TokenOwner setup must also cover this later creation.
+            var user = System.Security.Principal.WindowsIdentity.GetCurrent().User;
+            foreach (var path in new[] { fixture.Parent, fixture.Target, stage })
+                Assert.Equal(user, FileSystemAclExtensions.GetAccessControl(
+                    new DirectoryInfo(path), AccessControlSections.Owner)
+                    .GetOwner(typeof(System.Security.Principal.SecurityIdentifier)));
             observed = true;
         };
         RunOutcome result;

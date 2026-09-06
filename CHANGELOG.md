@@ -20,6 +20,29 @@
 - Two existing positive ACL fixtures now capture bounded owner/SID and durable
   versus readback security-descriptor diagnostics for hosted failures. Their
   assertions and production permission/recovery policy are unchanged.
+- Hosted evidence then identified two separate causes: Administrators-group
+  default ownership in positive fixtures, and Windows' unchanged-DACL
+  `SE_DACL_AUTO_INHERITED` readback marker. Test executables now establish their
+  own existing user SID as TokenOwner before creating fixtures, including
+  production-created stage children; user/groups/privileges are rechecked.
+  No existing ACL is repaired and no production ownership guard is relaxed.
+
+### Fixed: recorded upload ACL comparison (#1429, unreleased)
+
+- New upload journals explicitly capture Owner, Group and Access. Full-identity
+  recovery compares recorded owner/group, descriptor metadata and byte-exact
+  ordered ACLs; only Windows' documented `0 -> 1` auto-inherited marker may
+  differ. Permission, protection, identity and ACE-order drift still fail closed.
+- Old schema-2 ownerless records retain their exact Access-byte comparison;
+  missing historical owner authority is never fabricated. Legacy inference
+  retains its exact launcher-DENY and parent/child semantics prerequisites.
+- Recovery validates the whole census before writing, rechecks each identity
+  and descriptor before restoration, verifies readback, then checks all restored
+  directories again before removing the journal. Refusal preserves the journal.
+- Focused tests cover the hosted descriptor shape, old ownerless records,
+  monotonic marker changes, owner/group/ACE/control tampering and a last-row
+  mismatch which must not partially restore the first directory. These changes
+  remain an uninstalled launcher candidate, not a Steam SDK crash fix.
 
 ### Added: receipt-authority local exact-set deployment (#1429)
 

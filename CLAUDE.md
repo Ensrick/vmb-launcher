@@ -125,6 +125,17 @@ v0.5.9 launcher DENY on `sample_item`/`content`; any ambiguity fails closed.
 Both directories must carry the exact ACE, and every deeper exact-looking ACE
 must reconstruct its immediate parent's Access semantics before any write.
 
+New schema-2 upload ACL records explicitly include Owner, Group and Access.
+Full-identity comparison preserves owner/group, descriptor revision/resource
+byte, every ordered ACL byte and all control bits except the documented
+monotonic `SE_DACL_AUTO_INHERITED` transition from zero to one. Windows can set
+that marker while applying an otherwise unchanged DACL. Old ownerless schema-2
+records retain exact Access-only byte matching; never infer historical owners
+from the current directory or journal process SID. Recovery validates all rows
+before any write, rechecks at each write and verifies the final restored census
+before removing the journal. The local exact-set membership owner's stricter
+current-user requirement is independent and unchanged.
+
 The launcher joins a named kill-on-close Windows Job before mutation. Its
 schema-2 owner record persists that exact Job name. After hard owner death, a
 contender polls the recorded Job's `ActiveProcesses` accounting and closes

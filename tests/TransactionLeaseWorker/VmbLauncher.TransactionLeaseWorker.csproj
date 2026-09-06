@@ -7,6 +7,8 @@
     <AssemblyName>VmbLauncher.TransactionLeaseWorker</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Test-process initialization only; excluded from the production project. -->
+    <Compile Include="..\FixtureDefaultOwner.cs" Link="FixtureDefaultOwner.cs" />
     <ProjectReference Include="..\..\VmbLauncher.csproj"
                       AdditionalProperties="VmbLauncherTestBuild=true" />
   </ItemGroup>
