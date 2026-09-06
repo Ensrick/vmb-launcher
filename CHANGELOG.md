@@ -4,6 +4,13 @@
 
 ### Test graph corrections (#1429, unreleased)
 
+- Canonical test verification explicitly builds the Debug test graph and passes
+  its `bin/TestHooks/Debug` executable to the private-mutex wrapper fixture.
+  The fixture refuses normal production/foreign executables before setup; a
+  clean checkout no longer depends on a stale `bin/Debug` binary. Behavioral
+  orchestration tests cover success, failed tests and missing output on both
+  PowerShell hosts; evaluated Debug/Release compiler graphs keep test hooks out
+  of shipping code. Published-binary headless verification remains unchanged.
 - Machine-lease fixtures resolve their worker from the active test assembly's
   build configuration instead of hardcoding Debug. Mutation-census fixtures
   read the matching `obj/TestHooks/<configuration>/net9.0-windows` generated

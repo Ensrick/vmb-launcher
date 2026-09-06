@@ -4,12 +4,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path $PSScriptRoot -Parent),
+    [string]$RepoRoot,
     [switch]$SelfTest,
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RepoRoot) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
 
 function Get-ContractViolations {
     param([hashtable]$Files)
@@ -20,6 +21,7 @@ function Get-ContractViolations {
     $gui = [string]$Files['tests/gui_smoke.ps1']
     $actions = [string]$Files['tests/action_smoke.ps1']
     $test = [string]$Files['test.ps1']
+    $wrapper = [string]$Files['tests/transaction_wrapper_smoke.ps1']
 
     if ($headless -match '(?im)^\s*(?:&\s*)?Start-Process\b') {
         $violations += 'tests/headless_smoke.ps1 may not call Start-Process'
@@ -65,6 +67,23 @@ function Get-ContractViolations {
     if ($test -notmatch 'check_noninteractive_contract\.ps1') {
         $violations += 'test.ps1 must run the noninteractive contract guard'
     }
+    if ($test -notmatch 'VmbLauncher\.Tests\.csproj" -c Debug --nologo' -or
+        $test -notmatch 'bin\\TestHooks\\Debug\\net9\.0-windows\\VMBLauncher\.exe' -or
+        $test -notmatch 'transaction_wrapper_smoke\.ps1" -Exe \$wrapperExe') {
+        $violations += 'test.ps1 must pass the exact Debug TestHooks output to the wrapper fixture'
+    }
+    if ($wrapper -notmatch "'Local\\VMBLauncher\.Tests\.'" -or
+        $wrapper -notmatch "TRANSACTION_TEST_MODE = '1'" -or
+        $wrapper -notmatch 'TRANSACTION_TEST_MUTEX_NAME = \$mutexName' -or
+        $wrapper -notmatch 'TRANSACTION_TEST_MODE = \$old\.TestMode' -or
+        $wrapper -notmatch 'TRANSACTION_TEST_MUTEX_NAME = \$old\.TestMutex' -or
+        $wrapper -notmatch '\$allowedExecutables -notcontains \$Exe' -or
+        $wrapper -notmatch '-WindowStyle Hidden' -or
+        $wrapper -notmatch 'Copy\(\$env:ComSpec' -or
+        $wrapper -notmatch '& \$Exe build fixture_mod --no-banner --config \$settingsPath' -or
+        $wrapper -match '(?i)--gui|&\s+\$Exe\s+(deploy|upload|all)\b|Remove-Item[^\r\n]*-Recurse') {
+        $violations += 'wrapper smoke must remain an isolated TestHooks/private-mutex/fake-VMB-only fixture'
+    }
 
     return @($violations)
 }
@@ -78,7 +97,8 @@ function Read-ContractFiles {
         'test.ps1',
         'tests/headless_smoke.ps1',
         'tests/gui_smoke.ps1',
-        'tests/action_smoke.ps1'
+        'tests/action_smoke.ps1',
+        'tests/transaction_wrapper_smoke.ps1'
     )) {
         $path = Join-Path $Root ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
         $documents[$relative] = if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -110,7 +130,26 @@ if ($OpenOutput) {
     Start-Process explorer.exe
 }
 '@
-        'test.ps1' = '& "$root\tests\check_noninteractive_contract.ps1"'
+        'test.ps1' = @'
+& "$root\tests\check_noninteractive_contract.ps1"
+dotnet test "$root\tests\VmbLauncher.Tests.csproj" -c Debug --nologo
+$wrapperExe = Join-Path $root 'bin\TestHooks\Debug\net9.0-windows\VMBLauncher.exe'
+& "$root\tests\transaction_wrapper_smoke.ps1" -Exe $wrapperExe
+'@
+        'tests/transaction_wrapper_smoke.ps1' = @'
+$mutexName = 'Local\VMBLauncher.Tests.' + [guid]::NewGuid().ToString('N')
+if ($allowedExecutables -notcontains $Exe) { exit 2 }
+[IO.File]::Copy($env:ComSpec, $fakeVmb)
+$env:VMBLAUNCHER_TRANSACTION_TEST_MODE = '1'
+$env:VMBLAUNCHER_TRANSACTION_TEST_MUTEX_NAME = $mutexName
+try {
+    & $Exe build fixture_mod --no-banner --config $settingsPath
+    Start-Process $probe -WindowStyle Hidden
+} finally {
+    $env:VMBLAUNCHER_TRANSACTION_TEST_MODE = $old.TestMode
+    $env:VMBLAUNCHER_TRANSACTION_TEST_MUTEX_NAME = $old.TestMutex
+}
+'@
         'tests/headless_smoke.ps1' = @'
 $defaultCfgBefore = [IO.File]::ReadAllBytes($defaultCfg)
 $ownedConfigRoot = "vmb-headless-smoke-fixture"
@@ -192,6 +231,27 @@ if ($OpenOutput) {
         throw 'planted default force-stop was not detected'
     }
 
+    $wrongGraph = @{} + $good
+    $wrongGraph['test.ps1'] = $wrongGraph['test.ps1'].Replace('bin\TestHooks\Debug', 'bin\Debug')
+    if ((Get-ContractViolations $wrongGraph) -notcontains
+        'test.ps1 must pass the exact Debug TestHooks output to the wrapper fixture') {
+        throw 'planted stale production-output dependency was not detected'
+    }
+    foreach ($mutation in @('private-mutex', 'restore-environment', 'visible-probe', 'real-upload')) {
+        $unsafeWrapper = @{} + $good
+        $text = $unsafeWrapper['tests/transaction_wrapper_smoke.ps1']
+        switch ($mutation) {
+            'private-mutex' { $text = $text.Replace('Local\VMBLauncher.Tests.', 'Global\Ensrick.VMBLauncher.Transaction.') }
+            'restore-environment' { $text = $text.Replace('TRANSACTION_TEST_MODE = $old.TestMode', 'TRANSACTION_TEST_MODE = 1') }
+            'visible-probe' { $text = $text.Replace('-WindowStyle Hidden', '') }
+            'real-upload' { $text += "`n& `$Exe upload fixture_mod" }
+        }
+        $unsafeWrapper['tests/transaction_wrapper_smoke.ps1'] = $text
+        if ((Get-ContractViolations $unsafeWrapper) -notcontains
+            'wrapper smoke must remain an isolated TestHooks/private-mutex/fake-VMB-only fixture') {
+            throw "planted unsafe wrapper condition was not detected: $mutation"
+        }
+    }
     if (-not $Quiet) {
         Write-Host '[check_noninteractive_contract] SELFTEST OK'
     }

@@ -768,13 +768,25 @@ cd C:\Users\danjo\source\repos\vermintide-2-tweaker\tools\vmb-launcher
 The release binary lands at `bin/Release/net9.0-windows/win-x64/publish/VMBLauncher.exe`. The user typically copies it to `~/Downloads/` for distribution.
 
 **Headless-first rebuild guarantee.** Default `publish.ps1`, `test.ps1`, and
-`tests/headless_smoke.ps1` never launch WPF or Explorer and never execute
-`build`, `deploy`, `upload`, or `all`. GUI routing lives only in
+`tests/headless_smoke.ps1` never launch WPF or Explorer and never execute real
+mod build, deploy or upload actions. GUI routing lives only in
 `tests/gui_smoke.ps1 -Interactive`; real local build/deploy integration lives
 only in `tests/action_smoke.ps1 -IntegrationActions`. Never run either opt-in
 suite from agent, headless, CI, or publication verification.
 `tests/check_noninteractive_contract.ps1` guards this split with planted-failure
 coverage and runs from `test.ps1`.
+
+`test.ps1` explicitly selects the Debug test graph, then runs the transaction
+wrapper fixture against its exact `bin/TestHooks/Debug/net9.0-windows` executable.
+That fixture exercises only parent-lease joining with a fake VMB executable,
+temporary settings and a random private test mutex. Its test-only environment
+is restored, probes stay hidden, and cleanup validates paths before deleting
+individual files/empty directories. It refuses normal production or foreign
+executables before setup. Never build a normal Debug binary to satisfy this
+fixture: production Debug and Release deliberately exclude the private mutex
+hooks. The later `publish.ps1` production build and published-binary
+`headless_smoke.ps1` remain separate and unchanged. Clean-checkout orchestration
+fixtures must prove this order without any pre-existing normal `bin/Debug`.
 
 The default headless smoke clones launcher settings to a temporary isolated
 config, passes `--config` on every invocation, proves the real default settings
