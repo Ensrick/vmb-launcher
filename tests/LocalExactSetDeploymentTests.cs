@@ -322,12 +322,35 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
     public void DestinationCensus_EnforcesByteBoundBeforeHashingOversizedLeaf()
     {
         using var fixture = new Fixture();
+        var oversizedPath = Path.Combine(fixture.Target, OldBundle);
+        const long oversizedLength = 32L * 1024 * 1024 * 1024 + 1;
+        var hashes = 0;
+        LocalExactSetDeployment.SnapshotHashTransitionForTest = _ =>
+        {
+            hashes++;
+            throw new InvalidOperationException("Byte-bound fixture must reject before hashing any destination leaf.");
+        };
         using (var oversized = new FileStream(
-                   Path.Combine(fixture.Target, OldBundle),
+                   oversizedPath,
                    FileMode.Open,
                    FileAccess.Write,
                    FileShare.None))
-            oversized.SetLength(32L * 1024 * 1024 * 1024 + 1);
+        {
+            // FSCTL_SET_SPARSE must succeed before extending the real logical
+            // length. Never allocate a 32-GiB fixture on the hosted system disk.
+            Assert.True(DeviceIoControl(oversized.SafeFileHandle, 0x000900c4,
+                IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero),
+                $"FSCTL_SET_SPARSE failed: Win32 {Marshal.GetLastWin32Error()}");
+            Assert.True((File.GetAttributes(oversizedPath) & FileAttributes.SparseFile) != 0);
+            oversized.SetLength(oversizedLength);
+        }
+        Assert.True((File.GetAttributes(oversizedPath) & FileAttributes.SparseFile) != 0);
+        Assert.Equal(oversizedLength, new FileInfo(oversizedPath).Length);
+        var low = GetCompressedFileSizeW(oversizedPath, out var high);
+        Assert.True(low != uint.MaxValue || Marshal.GetLastWin32Error() == 0,
+            $"Cannot inspect sparse allocation: Win32 {Marshal.GetLastWin32Error()}");
+        var allocated = ((ulong)high << 32) | low;
+        Assert.InRange(allocated, 0UL, 1024UL * 1024);
         using var source = fixture.Capture();
 
         var result = LocalExactSetDeployment.Reconcile(
@@ -337,6 +360,7 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
 
         Assert.False(result.Ok);
         Assert.Contains("32-GiB", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, hashes);
         fixture.AssertNoTransactionArtifacts();
     }
 
@@ -1628,12 +1652,15 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
             Assert.Equal("new descriptor", File.ReadAllText(Path.Combine(target, Mod + ".mod")));
             Assert.Equal("new bundle bytes", File.ReadAllText(Path.Combine(target, NewBundle)));
             Assert.False(File.Exists(Path.Combine(target, OldBundle)));
-            Assert.Equal(parentAcl, GetAcl(parent));
-            Assert.Equal(targetAcl, GetAcl(target));
-            Assert.Equal(siblingDirectoryAcl, GetAcl(siblingDirectory));
-            Assert.Equal(siblingFileAcl, GetAcl(siblingFile));
-            Assert.Equal(descriptorAclWhileSealed, GetAcl(expectedDescriptor));
-            Assert.Equal(bundleAclWhileSealed, GetAcl(Path.Combine(target, NewBundle)));
+            NativeAclReadbackFixture.AssertReadback(parentAcl, GetAcl(parent), "worker restored parent");
+            NativeAclReadbackFixture.AssertReadback(targetAcl, GetAcl(target), "worker restored target");
+            // Native inheritance-model conversion can mark unprotected sibling
+            // and leaf descriptors. All remaining bytes must still be identical;
+            // this cannot waive propagated permissions or reordered/inherited ACEs.
+            NativeAclReadbackFixture.AssertReadback(siblingDirectoryAcl, GetAcl(siblingDirectory), "worker sibling directory");
+            NativeAclReadbackFixture.AssertReadback(siblingFileAcl, GetAcl(siblingFile), "worker sibling file");
+            NativeAclReadbackFixture.AssertReadback(descriptorAclWhileSealed, GetAcl(expectedDescriptor), "worker descriptor leaf");
+            NativeAclReadbackFixture.AssertReadback(bundleAclWhileSealed, GetAcl(Path.Combine(target, NewBundle)), "worker bundle leaf");
             Assert.DoesNotContain(
                 Directory.EnumerateFileSystemEntries(parent),
                 path => Path.GetFileName(path).StartsWith(
@@ -2719,6 +2746,16 @@ public sealed class LocalExactSetDeploymentTests : MutationTestBase
         bool Ok,
         string Message,
         string[] Trace);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(
+        Microsoft.Win32.SafeHandles.SafeFileHandle file,
+        uint controlCode, IntPtr input, uint inputLength,
+        IntPtr output, uint outputLength, out uint bytesReturned, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetCompressedFileSizeW(string fileName, out uint high);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

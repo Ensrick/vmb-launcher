@@ -26,6 +26,15 @@
   own existing user SID as TokenOwner before creating fixtures, including
   production-created stage children; user/groups/privileges are rechecked.
   No existing ACL is repaired and no production ownership guard is relaxed.
+- Follow-on hosted fixtures no longer assume newly created directories already
+  have the auto-inherited marker. The two explicit marker scenarios persist an
+  unchanged DACL natively inside an empty TempDir-owned directory before capture.
+  Post-native-write root/descendant assertions use an independent byte oracle:
+  only the one documented marker bit may advance, never owner, ACE or other flags.
+- The 32-GiB byte-bound fixture now uses an authentic NTFS sparse file with a
+  logical length of 32 GiB plus one byte and at most 1 MiB physical allocation.
+  Any entry into the destination hash phase throws and fails the fixture; the
+  production byte bound remains unchanged.
 
 ### Fixed: recorded upload ACL comparison (#1429, unreleased)
 

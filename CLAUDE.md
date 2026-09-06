@@ -146,6 +146,18 @@ readback allowance to accept a modified journal plan. Tests exercise actual
 NTFS Prepare/Resume/Apply/Restore with both recorded marker bits cleared,
 failed-apply restoration, and independent descriptor/plan tampering.
 
+Hosted fixture detail: fresh directories may start with or without that marker.
+Explicit marker tests establish it with real native persistence only on an empty
+TempDir-owned directory, before creating descendants. Root and descendant
+post-write assertions independently compare every descriptor byte, allowing only
+that documented `0 -> 1` control-bit change; initial no-write assertions remain
+byte-exact. This accounts for Windows' [inheritance-model conversion](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces),
+not permission equivalence or a waiver for propagated/reordered ACEs. Tests must
+not call the production comparator as their oracle. Oversized byte-bound tests
+use [FSCTL_SET_SPARSE](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_sparse)
+before growing a file, verify bounded allocation, and fail before any hashing;
+never reserve tens of GiB on the hosted runner's disk for a boundary fixture.
+
 The launcher joins a named kill-on-close Windows Job before mutation. Its
 schema-2 owner record persists that exact Job name. After hard owner death, a
 contender polls the recorded Job's `ActiveProcesses` accounting and closes

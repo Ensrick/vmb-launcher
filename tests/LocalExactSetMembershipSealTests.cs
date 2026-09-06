@@ -51,11 +51,11 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         Assert.Equal(targetAcl, GetAcl(target));
 
         parentSeal.Apply();
-        AssertDescriptors(untouched);
+        AssertNativeInheritanceReadback(untouched);
         targetSeal.Apply();
         parentSeal.RequireApplied();
         targetSeal.RequireApplied();
-        AssertDescriptors(untouched);
+        AssertNativeInheritanceReadback(untouched);
 
         Assert.ThrowsAny<UnauthorizedAccessException>(() =>
             File.WriteAllText(Path.Combine(target, "inserted.mod_bundle"), "foreign"));
@@ -69,15 +69,16 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         Assert.ThrowsAny<IOException>(() =>
             Directory.Move(target, Path.Combine(parent, "renamed-target")));
         Assert.Equal(leafAcl, GetAcl(expected));
-        AssertDescriptors(untouched);
+        AssertNativeInheritanceReadback(untouched);
 
         targetSeal.Restore();
         parentSeal.Restore();
         targetSeal.RequireOriginal();
         parentSeal.RequireOriginal();
-        Assert.Equal(targetAcl, GetAcl(target));
-        Assert.Equal(parentAcl, GetAcl(parent));
-        Assert.Equal(leafAcl, GetAcl(expected));
+        NativeAclReadbackFixture.AssertReadback(targetAcl, GetAcl(target), "restored target");
+        NativeAclReadbackFixture.AssertReadback(parentAcl, GetAcl(parent), "restored parent");
+        NativeAclReadbackFixture.AssertReadback(leafAcl, GetAcl(expected), "restored descendant leaf");
+        AssertNativeInheritanceReadback(untouched);
 
         var postRestore = Path.Combine(target, "post-restore.mod_bundle");
         File.WriteAllText(postRestore, "allowed");
@@ -126,7 +127,7 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         var targetPlan = targetSeal.Plan;
         parentSeal.Apply();
         targetSeal.Apply();
-        AssertDescriptors(untouched);
+        AssertNativeInheritanceReadback(untouched);
         targetSeal.AbandonWithoutRestore();
         parentSeal.AbandonWithoutRestore();
 
@@ -142,7 +143,7 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         }
 
         File.WriteAllText(Path.Combine(target, "after-recovery.mod_bundle"), "allowed");
-        AssertDescriptors(untouched);
+        AssertNativeInheritanceReadback(untouched);
     }
 
     [Fact]
@@ -199,8 +200,8 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         }
 
         seal.RequireOriginal();
-        Assert.Equal(parentDescriptor, GetAcl(parent));
-        AssertDescriptors(untouched);
+        NativeAclReadbackFixture.AssertReadback(parentDescriptor, GetAcl(parent), "failed-apply restored root");
+        AssertNativeInheritanceReadback(untouched);
     }
 
     [Fact]
@@ -344,6 +345,7 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
     {
         using var temp = new TempDir();
         var target = temp.CreateSubdir("target");
+        NativeAclReadbackFixture.EstablishAutoInheritedDirectory(temp, target);
         var child = temp.Write(@"target\child.txt", "untouched");
         var childBefore = GetAcl(child);
         var identity = ImmutableBundleSourceLease.InspectDirectory(target);
@@ -415,6 +417,7 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
     {
         using var temp = new TempDir();
         var target = temp.CreateSubdir("target");
+        NativeAclReadbackFixture.EstablishAutoInheritedDirectory(temp, target);
         var child = temp.Write(@"target\child.txt", "untouched");
         var original = GetAcl(target);
         var childBefore = GetAcl(child);
@@ -579,9 +582,13 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
     private static Dictionary<string, byte[]> CaptureDescriptors(params string[] paths) =>
         paths.ToDictionary(path => path, GetAcl, StringComparer.OrdinalIgnoreCase);
 
-    private static void AssertDescriptors(IReadOnlyDictionary<string, byte[]> expected)
+    private static void AssertNativeInheritanceReadback(IReadOnlyDictionary<string, byte[]> expected)
     {
+        // Setting a parent's DACL can mark unprotected descendants as converted
+        // to Windows' current inheritance model even when every ACE is unchanged.
+        // Only these post-native-write assertions allow the marker; the complete
+        // descriptor otherwise remains byte-exact, including inherited ACE flags.
         foreach (var pair in expected)
-            Assert.Equal(pair.Value, GetAcl(pair.Key));
+            NativeAclReadbackFixture.AssertReadback(pair.Value, GetAcl(pair.Key), pair.Key);
     }
 }
