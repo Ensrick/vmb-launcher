@@ -2,12 +2,17 @@ using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using VmbLauncher.Services;
+using Xunit.Abstractions;
 
 namespace VmbLauncher.Tests;
 
 [Collection("receipt-deploy-serial")]
 public sealed class LocalExactSetMembershipSealTests : MutationTestBase
 {
+    private readonly ITestOutputHelper _output;
+
+    public LocalExactSetMembershipSealTests(ITestOutputHelper output) => _output = output;
+
     [Fact]
     public void ParentAndTargetSeals_BlockNamespaceMutation_AndRestoreExactAcls()
     {
@@ -34,6 +39,8 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
             FileAccess.Read,
             FileShare.Read);
 
+        WriteMembershipDescriptorDiagnostics("parent-before-prepare", parent);
+        WriteMembershipDescriptorDiagnostics("target-before-prepare", target);
         using var parentSeal = LocalExactSetMembershipSeal.Prepare(
             parent,
             ImmutableBundleSourceLease.InspectDirectory(parent));
@@ -75,6 +82,29 @@ public sealed class LocalExactSetMembershipSealTests : MutationTestBase
         var postRestore = Path.Combine(target, "post-restore.mod_bundle");
         File.WriteAllText(postRestore, "allowed");
         Assert.Equal("allowed", File.ReadAllText(postRestore));
+    }
+
+    private void WriteMembershipDescriptorDiagnostics(string label, string path)
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var bytes = FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path),
+                AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access)
+                .GetSecurityDescriptorBinaryForm();
+            if (bytes.Length > 4096) throw new InvalidDataException("descriptor exceeds 4096-byte diagnostic bound");
+            var descriptor = new RawSecurityDescriptor(bytes, 0);
+            _output.WriteLine($"[membership-diagnostic] {label} current_sid={identity.User?.Value ?? "<null>"} path={path}");
+            _output.WriteLine($"owner={descriptor.Owner?.Value ?? "<null>"} group={descriptor.Group?.Value ?? "<null>"} control=0x{(int)descriptor.ControlFlags:X4} ({descriptor.ControlFlags})");
+            _output.WriteLine("sddl=" + descriptor.GetSddlForm(
+                AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access));
+        }
+        catch (Exception ex)
+        {
+            // Reporting cannot replace the fixture's real assertion/failure.
+            try { _output.WriteLine($"[membership-diagnostic] {label} unavailable: {ex.GetType().Name}: {ex.Message[..Math.Min(ex.Message.Length, 1024)]}"); }
+            catch { }
+        }
     }
 
     [Fact]

@@ -17,6 +17,9 @@
   parameter named `wasAbandoned` is no longer accepted as refusal evidence.
 - These fixture-path corrections do not relax production ownership, ACL,
   receipt or publication gates and do not resolve the separate Steam SDK crash.
+- Two existing positive ACL fixtures now capture bounded owner/SID and durable
+  versus readback security-descriptor diagnostics for hosted failures. Their
+  assertions and production permission/recovery policy are unchanged.
 
 ### Added: receipt-authority local exact-set deployment (#1429)
 

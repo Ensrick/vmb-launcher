@@ -3,11 +3,16 @@ using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json.Nodes;
+using Xunit.Abstractions;
 
 namespace VmbLauncher.Tests;
 
 public class UploadPathLeaseTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public UploadPathLeaseTests(ITestOutputHelper output) => _output = output;
+
     private static UploadPathLease Capture(StagedUpload staged, string tool)
     {
         var root = Path.GetDirectoryName(Path.GetDirectoryName(staged.StagingDir))
@@ -35,6 +40,7 @@ public class UploadPathLeaseTests
             new StagedUpload(staging, cfg, "preview.jpg", 1), tool);
         crashed.AbandonForCrashFixture();
 
+        WriteJournalDescriptorDiagnostics(tmp.Path, staging, content);
         Assert.False(GetAclBytes(staging).SequenceEqual(originalStaging));
         Assert.False(GetAclBytes(content).SequenceEqual(originalContent));
 
@@ -53,6 +59,68 @@ public class UploadPathLeaseTests
         Assert.Equal(originalStaging, GetAclBytes(staging));
         Assert.Equal(originalContent, GetAclBytes(content));
         File.WriteAllText(System.IO.Path.Combine(content, "next-stage.mod"), "ok");
+    }
+
+    private void WriteJournalDescriptorDiagnostics(string fixtureRoot, string staging, string content)
+    {
+        try
+        {
+            var journalPath = Path.Combine(fixtureRoot, "uploader", ".vmblauncher-upload-acl-lease.json");
+            TempDir.ValidateCleanupPath(fixtureRoot, journalPath, File.GetAttributes);
+            using var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length > 65536) throw new InvalidDataException("journal exceeds 64 KiB diagnostic bound");
+            var bytes = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(bytes);
+            var entries = JsonNode.Parse(bytes)?["entries"]?.AsArray()
+                ?? throw new InvalidDataException("diagnostic journal has no entries array");
+            if (entries.Count != 2) throw new InvalidDataException("diagnostic journal must contain exactly two fixture directories");
+            var expectedPaths = new[] { staging, content };
+            var byPath = new Dictionary<string, JsonNode>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries)
+            {
+                var path = entry?["path"]?.GetValue<string>()
+                    ?? throw new InvalidDataException("diagnostic journal entry has no path");
+                path = Path.GetFullPath(path);
+                if (!expectedPaths.Contains(path, StringComparer.OrdinalIgnoreCase) || !byPath.TryAdd(path, entry!))
+                    throw new InvalidDataException("diagnostic journal path is foreign or duplicated");
+            }
+            using var identity = WindowsIdentity.GetCurrent();
+            _output.WriteLine($"[upload-acl-diagnostic] current_sid={identity.User?.Value ?? "<null>"} journal={journalPath}");
+            foreach (var path in expectedPaths)
+            {
+                TempDir.ValidateCleanupPath(fixtureRoot, path, File.GetAttributes);
+                var entry = byPath[path];
+                foreach (var field in new[] { "original_descriptor", "frozen_descriptor" })
+                {
+                    var encoded = entry[field]?.GetValue<string>()
+                        ?? throw new InvalidDataException("diagnostic journal descriptor is missing");
+                    if (encoded.Length > 8192) throw new InvalidDataException("encoded descriptor exceeds diagnostic bound");
+                    WriteUploadDescriptorDiagnostics($"{path} journal.{field}", Convert.FromBase64String(encoded));
+                }
+                // Access-only is the exact reader used by production recovery.
+                WriteUploadDescriptorDiagnostics($"{path} post-freeze/pre-recovery.access-only", GetAclBytes(path));
+                WriteUploadDescriptorDiagnostics($"{path} post-freeze/pre-recovery.owner-group-access",
+                    FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path),
+                        AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access)
+                        .GetSecurityDescriptorBinaryForm());
+            }
+        }
+        catch (Exception ex)
+        {
+            // Diagnostics never repair permissions or mask the original result.
+            try { _output.WriteLine($"[upload-acl-diagnostic] unavailable: {ex.GetType().Name}: {ex.Message[..Math.Min(ex.Message.Length, 1024)]}"); }
+            catch { }
+        }
+    }
+
+    private void WriteUploadDescriptorDiagnostics(string label, byte[] bytes)
+    {
+        if (bytes.Length > 4096) throw new InvalidDataException("descriptor exceeds 4096-byte diagnostic bound");
+        _output.WriteLine($"[upload-acl-diagnostic] {label} bytes={bytes.Length} hex={Convert.ToHexString(bytes)}");
+        var descriptor = new RawSecurityDescriptor(bytes, 0);
+        _output.WriteLine($"owner={descriptor.Owner?.Value ?? "<null>"} group={descriptor.Group?.Value ?? "<null>"} control=0x{(int)descriptor.ControlFlags:X4} ({descriptor.ControlFlags})");
+        _output.WriteLine("sddl=" + descriptor.GetSddlForm(
+            AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access));
     }
 
     [Fact]
