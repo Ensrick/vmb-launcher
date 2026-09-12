@@ -50,8 +50,11 @@ public class DiagnosticsTests
             WorkshopContentRoot = ws.Path,
         };
         var checks = Diagnostics.RunAll(s);
-        // Steam-running may legitimately be a Warn on the test machine.
-        Assert.False(Diagnostics.HasErrors(checks));
+        // Steam readiness reflects the real host. It may be Warn when Steam is
+        // stopped or Error when the host's live Steamworks registration points
+        // at a different install than this synthetic SteamRoot.
+        Assert.DoesNotContain(checks, c =>
+            c.Status == CheckStatus.Error && c.Title != "Steam");
     }
 
     [Fact]

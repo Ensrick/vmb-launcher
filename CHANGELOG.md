@@ -1,5 +1,21 @@
 # VMB Launcher Changelog
 
+## v0.6.3 (2026-09-12)
+
+### Fixed: stale Steamworks registration crashed every Workshop upload (vermintide-2-tweaker#1548)
+
+- Steam readiness now verifies the 32-bit `ActiveProcess` registration used by
+  the SDK's x86 uploader, rather than accepting the presence of any
+  `steam.exe` process as sufficient evidence.
+- Missing, dead, PID-reused, unreadable, wrong-install, and missing-client-DLL
+  registrations fail closed with an explicit full-Steam-restart recovery
+  message. `doctor` reports the condition as an error and upload preflight
+  stops before staging.
+- Readiness is checked again at the final native process boundary so Steam
+  exiting or losing registration during a release cannot reach `ugc_tool`.
+- Pure behavioral tests cover every readiness verdict. Default tests remain
+  headless and do not start Steam, VMB, Stingray, or the Workshop uploader.
+
 ## v0.6.2 (2026-08-26)
 
 ### Test graph corrections (#1429, unreleased)

@@ -124,7 +124,10 @@ public partial class MainWindow : Window
         var parts = new List<string>();
         var vmb = VmbLocator.Resolve(_settings.VmbRoot);
         parts.Add(vmb != null ? $"VMB: {vmb.Flavor}" : "VMB: not found");
-        parts.Add(SteamLocator.IsSteamRunning() ? "Steam: running" : "Steam: not running");
+        var steam = SteamLocator.GetWorkshopUploadReadiness(_settings.SteamRoot);
+        parts.Add(steam.Ready
+            ? "Steamworks: ready"
+            : steam.SteamRunning ? "Steamworks: restart required" : "Steam: not running");
         if (!string.IsNullOrEmpty(_settings.WorkshopContentRoot)) parts.Add("Workshop: ok");
         else parts.Add("Workshop: missing");
         TbVmbInfo.Text = string.Join("   ·   ", parts);

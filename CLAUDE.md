@@ -403,6 +403,22 @@ guards against. If you're authoring tooling outside the launcher (raw
 PowerShell wrappers, manual `ugc_tool` invocations, alternative
 upload paths), respect every item — most are silent failures.
 
+### A running Steam process is not sufficient upload readiness
+
+The Vermintide 2 SDK uploader is 32-bit and initializes Steamworks from
+`HKCU\Software\Valve\Steam\ActiveProcess` in the 32-bit registry view. Steam
+can remain visibly running while that registration points to a dead or reused
+PID; in that state the SDK uploader has crashed with native access violation
+`0xc0000005` before producing normal output.
+
+VMBLauncher must inspect the registered PID and `SteamClientDll`, require that
+the PID is a live `steam.exe` and that the DLL belongs to the configured Steam
+installation, then recheck immediately before starting the SDK child. Do not
+replace this with a process-name-only test. `vmblauncher doctor` is the
+supported read-only check.
+If it reports stale Steamworks registration, fully exit Steam and restart it;
+never edit the registry or bypass the VMB publication boundary.
+
 ### PowerShell 5.1 `Get-Content -Raw` is NOT UTF-8
 
 PowerShell 5.1's `Get-Content -Raw $path` reads files using the

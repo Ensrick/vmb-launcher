@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using Microsoft.Win32;
 
 namespace VmbLauncher.Services;
@@ -95,4 +96,144 @@ public static class SteamLocator
         }
         catch { return false; }
     }
+
+    public sealed record UploadReadiness(bool Ready, bool SteamRunning, string Detail);
+
+    /// <summary>
+    /// Verify the 32-bit Steamworks registration consumed by the SDK's x86
+    /// ugc_tool, not merely the presence of a steam.exe process. A stale
+    /// ActiveProcess PID makes SteamAPI_Init fail inside ugc_tool and has
+    /// produced repeatable native access violations during publication.
+    /// </summary>
+    public static UploadReadiness GetWorkshopUploadReadiness(string? expectedSteamRoot = null)
+    {
+        var liveProcesses = new Dictionary<int, string>();
+        try
+        {
+            foreach (var process in Process.GetProcessesByName("steam"))
+            {
+                using (process)
+                {
+                    try { liveProcesses[process.Id] = process.ProcessName; }
+                    catch { /* A process can exit while the snapshot is read. */ }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            return new UploadReadiness(false, false,
+                $"Steam process state could not be inspected ({ex.Message}).");
+        }
+
+        int? registeredPid = null;
+        string? registeredClientDll = null;
+        try
+        {
+            using var hkcu = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry32);
+            using var key = hkcu.OpenSubKey(@"Software\Valve\Steam\ActiveProcess");
+            if (key?.GetValue("pid") is int pid && pid > 0) registeredPid = pid;
+            registeredClientDll = key?.GetValue("SteamClientDll") as string;
+        }
+        catch (Exception ex)
+        {
+            var steamRunning = liveProcesses.Values.Any(IsSteamProcessName);
+            return new UploadReadiness(false, steamRunning,
+                $"Steam is running, but its 32-bit Steamworks registration could not be read ({ex.Message}). " +
+                "Exit Steam fully and restart it before uploading.");
+        }
+
+        // Resolve the registered PID independently so PID reuse by a foreign
+        // process is distinguishable from a dead registration.
+        if (registeredPid is int registeredProcessId &&
+            !liveProcesses.ContainsKey(registeredProcessId))
+        {
+            try
+            {
+                using var registered = Process.GetProcessById(registeredProcessId);
+                liveProcesses[registered.Id] = registered.ProcessName;
+            }
+            catch (ArgumentException) { /* The registered process is absent. */ }
+            catch (InvalidOperationException) { /* It exited during inspection. */ }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                // An unreadable live PID is not evidence that it is Steam.
+                liveProcesses[registeredProcessId] = "<unreadable>";
+            }
+        }
+
+        var expectedClientDll = string.IsNullOrWhiteSpace(expectedSteamRoot)
+            ? null
+            : Path.Combine(expectedSteamRoot, "steamclient.dll");
+        var registeredClientDllExists = !string.IsNullOrWhiteSpace(registeredClientDll)
+            && File.Exists(registeredClientDll);
+
+        return EvaluateWorkshopUploadReadiness(
+            liveProcesses,
+            registeredPid,
+            registeredClientDll,
+            registeredClientDllExists,
+            expectedClientDll);
+    }
+
+    internal static UploadReadiness EvaluateWorkshopUploadReadiness(
+        IReadOnlyDictionary<int, string> liveProcesses,
+        int? registeredPid,
+        string? registeredClientDll,
+        bool registeredClientDllExists,
+        string? expectedClientDll)
+    {
+        var steamPids = liveProcesses
+            .Where(pair => IsSteamProcessName(pair.Value))
+            .Select(pair => pair.Key)
+            .ToHashSet();
+        if (steamPids.Count == 0)
+            return new UploadReadiness(false, false, "Steam isn't running. Uploads need it.");
+
+        if (registeredPid is null)
+            return new UploadReadiness(false, true,
+                "Steam is running, but its 32-bit Steamworks ActiveProcess registration is missing. " +
+                "Exit Steam fully and restart it before uploading.");
+
+        if (!liveProcesses.TryGetValue(registeredPid.Value, out var registeredName))
+            return new UploadReadiness(false, true,
+                $"Steam is running, but its 32-bit Steamworks ActiveProcess registration points to dead PID {registeredPid}. " +
+                "Exit Steam fully and restart it before uploading.");
+
+        if (!IsSteamProcessName(registeredName))
+            return new UploadReadiness(false, true,
+                $"Steam is running, but its 32-bit Steamworks ActiveProcess PID {registeredPid} now belongs to '{registeredName}'. " +
+                "Exit Steam fully and restart it before uploading.");
+
+        if (!registeredClientDllExists)
+            return new UploadReadiness(false, true,
+                "Steam is running, but its registered 32-bit steamclient.dll is missing. " +
+                "Repair or restart Steam before uploading.");
+
+        if (!string.IsNullOrWhiteSpace(expectedClientDll))
+        {
+            try
+            {
+                if (!Path.GetFullPath(registeredClientDll!).Equals(
+                    Path.GetFullPath(expectedClientDll), StringComparison.OrdinalIgnoreCase))
+                {
+                    return new UploadReadiness(false, true,
+                        $"Steamworks is registered to '{registeredClientDll}', but VMB is configured for '{expectedClientDll}'. " +
+                        "Select the matching Steam install or restart Steam before uploading.");
+                }
+            }
+            catch (Exception ex)
+            {
+                return new UploadReadiness(false, true,
+                    $"Steam's registered steamclient.dll path is invalid ({ex.Message}). " +
+                    "Repair or restart Steam before uploading.");
+            }
+        }
+
+        return new UploadReadiness(true, true,
+            $"Steamworks upload registration ready (PID {registeredPid}).");
+    }
+
+    private static bool IsSteamProcessName(string? name)
+        => string.Equals(name, "steam", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "steam.exe", StringComparison.OrdinalIgnoreCase);
 }
