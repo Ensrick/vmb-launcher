@@ -86,7 +86,13 @@ public partial class SettingsWindow : Window
 
         lines.Add(string.IsNullOrEmpty(Settings.SteamRoot) || !Directory.Exists(Settings.SteamRoot)
             ? "✗ Steam root not set or missing" : $"✓ Steam at {Settings.SteamRoot}");
-        lines.Add(SteamLocator.IsSteamRunning() ? "✓ Steam is running" : "⚠ Steam isn't running (uploads will fail until you start it)");
+        if (!string.IsNullOrEmpty(Settings.SteamRoot) && Directory.Exists(Settings.SteamRoot))
+        {
+            var readiness = SteamLocator.GetWorkshopUploadReadiness(Settings.SteamRoot);
+            lines.Add(readiness.Ready
+                ? $"✓ {readiness.Detail}"
+                : $"✗ {readiness.Detail}");
+        }
 
         lines.Add(string.IsNullOrEmpty(Settings.Vt2SdkRoot) || !Directory.Exists(Settings.Vt2SdkRoot)
             ? "✗ VT2 SDK not found — install via Steam: Library → Tools → Vermintide 2 SDK" : $"✓ VT2 SDK at {Settings.Vt2SdkRoot}");

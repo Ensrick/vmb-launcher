@@ -49,10 +49,16 @@ public static class Diagnostics
         // Steam
         if (string.IsNullOrEmpty(s.SteamRoot) || !Directory.Exists(s.SteamRoot))
             results.Add(new CheckResult("Steam", CheckStatus.Error, "Steam install folder not found. Auto-detect or browse to it.", "browse-steam"));
-        else if (!SteamLocator.IsSteamRunning())
-            results.Add(new CheckResult("Steam", CheckStatus.Warn, "Steam isn't running. Uploads need it.", "start-steam"));
         else
-            results.Add(new CheckResult("Steam", CheckStatus.Ok, $"running, {s.SteamRoot}"));
+        {
+            var readiness = SteamLocator.GetWorkshopUploadReadiness(s.SteamRoot);
+            if (!readiness.SteamRunning)
+                results.Add(new CheckResult("Steam", CheckStatus.Warn, readiness.Detail, "start-steam"));
+            else if (!readiness.Ready)
+                results.Add(new CheckResult("Steam", CheckStatus.Error, readiness.Detail));
+            else
+                results.Add(new CheckResult("Steam", CheckStatus.Ok, $"{readiness.Detail} {s.SteamRoot}"));
+        }
 
         // SDK
         if (string.IsNullOrEmpty(s.Vt2SdkRoot) || !Directory.Exists(s.Vt2SdkRoot))

@@ -25,6 +25,7 @@ This tool handles all of that.
 ## What it does
 
 - **Auto-detects** VMB, Steam, the VT2 SDK, `ugc_tool.exe`, and the Workshop content folder. Most users never touch the Settings dialog.
+- **Validates Steamworks upload readiness** — a visible Steam client with a stale 32-bit `ActiveProcess` registration is rejected with a restart instruction before the SDK uploader can crash.
 - **First-run setup** highlights anything missing with one-click fixes (auto-detect, browse, install SDK via Steam, subscribe in Steam).
 - **Build / Deploy** buttons per mod. GUI publication actions explain the required reviewed ship workflow and never invoke `ugc_tool`.
 - **Headless CLI** — same binary, run from PowerShell or cmd with verbs (`list`, `info`, `doctor`, `build`, `deploy`, `upload`, `all`). Real exit codes, streamed output, no second binary to install. See [Headless mode](#headless-mode) below.

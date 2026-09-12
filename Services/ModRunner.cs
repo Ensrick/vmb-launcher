@@ -234,8 +234,9 @@ public sealed class ModRunner
         if (!Directory.Exists(mod.BundleV2Dir) || !Directory.EnumerateFiles(mod.BundleV2Dir, "*.mod_bundle").Any())
             return new RunOutcome(false, "No build output. Run Build first.");
 
-        if (!SteamLocator.IsSteamRunning())
-            return new RunOutcome(false, "Steam isn't running. Start Steam, then retry.");
+        var steamReadiness = SteamLocator.GetWorkshopUploadReadiness(_settings.SteamRoot);
+        if (!steamReadiness.Ready)
+            return new RunOutcome(false, steamReadiness.Detail);
 
         if (mod.IsPublic && !allowPublic)
             return new RunOutcome(false, "itemV2.cfg has visibility = \"public\". Re-run with the Allow Public confirmation. Public mods can be flagged irreversibly.");
@@ -416,6 +417,15 @@ public sealed class ModRunner
                     false,
                     $"[publication-gate] REFUSING ugc_tool: could not open the constrained bootstrap boundary ({ex.Message}).");
             }
+
+
+            // Recheck at the actual process boundary. Steam can exit or leave
+            // a stale ActiveProcess registration after the earlier preflight;
+            // never let that state reach the native SDK uploader.
+            var launchReadiness = SteamLocator.GetWorkshopUploadReadiness(_settings.SteamRoot);
+            if (!launchReadiness.Ready)
+                return new RunOutcome(false,
+                    $"[steam-preflight] REFUSING ugc_tool: {launchReadiness.Detail}");
 
             var toolFwd = verified.ToolPath.Replace('\\', '/');
             var uploaderDir = Path.GetDirectoryName(verified.ToolPath)!.Replace('\\', '/');

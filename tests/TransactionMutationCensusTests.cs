@@ -181,7 +181,7 @@ public class TransactionMutationCensusTests
             // is deliberate review friction and requires re-proving ownership.
             // TbLog is generated from XAML, so source-only compilation cannot
             // bind TextBox.AppendText; retain it visibly instead of suppressing it.
-            "MainWindow.xaml.cs:168:9:1:UNRESOLVED mutation candidate",
+            "MainWindow.xaml.cs:171:9:1:UNRESOLVED mutation candidate",
             "Services/MachineTransactionLease.cs:385:9:1:Directory API",
             "Services/MachineTransactionLease.cs:390:33:1:new FileStream",
             "Services/MachineTransactionLease.cs:394:17:1:stream.Write",
