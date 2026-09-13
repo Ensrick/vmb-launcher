@@ -378,7 +378,7 @@ public static partial class PublicationReceiptGate
             : expectedPurpose is "workshop_upload" or "workshop_bootstrap"
                 ? $"publication-receipt-{modName}.json"
                 : "";
-        if (receipt.Repository != GitHubRepo ||
+        if (!PublicationRepositoryProfile.Allows(receipt.Repository, modName) ||
             string.IsNullOrWhiteSpace(receipt.ReleaseTag) ||
             !string.Equals(receipt.ReceiptAssetName, expectedAssetName, StringComparison.Ordinal))
             return new(false, "Receipt is not bound to canonical GitHub release coordinates.");
@@ -420,6 +420,9 @@ public static partial class PublicationReceiptGate
             !string.Equals(auth.QaCheckUrl, live.QaCheckUrl, StringComparison.Ordinal) ||
             auth.QaCompletedAtUtc.ToUniversalTime() != live.QaCompletedAtUtc.ToUniversalTime())
             return new(false, "Hosted qa-gate evidence does not match the independently queried successful check.");
+
+        if (!PublicationRepositoryProfile.MatchesChannel(receipt.Repository, modName, sourcePublishedId, sourceVersion, live.DefaultBranch))
+            return new(false, "Repository, mod, Workshop ID, version suffix or default branch crosses a publication channel.");
 
         if (string.IsNullOrWhiteSpace(sourcePublishedId))
             return new(false, "Exact source-commit cfg has no published_id.");
@@ -582,12 +585,13 @@ public static partial class PublicationReceiptGate
         IReadOnlyDictionary<string, GitTreeEntry> entries)
     {
 
-        var cfgRepoPath = $"{modName}/itemV2.cfg";
+        var prefix = PublicationRepositoryProfile.Prefix(modName);
+        var cfgRepoPath = $"{prefix}itemV2.cfg";
         var cfgEntry = RequireBlob(entries, cfgRepoPath);
         var cfgBytes = ReadGitBlob(root, cfgEntry.ObjectId);
         var cfgText = Encoding.UTF8.GetString(cfgBytes);
 
-        var bundlePrefix = $"{modName}/bundleV2/";
+        var bundlePrefix = $"{prefix}bundleV2/";
         var bundleEntries = entries.Values
             .Where(entry => entry.Path.StartsWith(bundlePrefix, StringComparison.Ordinal))
             .OrderBy(entry => entry.Path, StringComparer.Ordinal)
@@ -613,8 +617,8 @@ public static partial class PublicationReceiptGate
 
         var previewName = UploadStager.ResolvePreviewNameFromSourceCfg(
             cfgText,
-            name => entries.ContainsKey($"{modName}/{name}"));
-        var previewRepoPath = $"{modName}/{previewName}";
+            name => entries.ContainsKey($"{prefix}{name}"));
+        var previewRepoPath = $"{prefix}{previewName}";
         PublicationPreviewFile preview;
         if (entries.TryGetValue(previewRepoPath, out var previewEntry))
         {
@@ -641,7 +645,7 @@ public static partial class PublicationReceiptGate
             };
         }
 
-        var luaPath = $"{modName}/scripts/mods/{modName}/{modName}.lua";
+        var luaPath = $"{prefix}scripts/mods/{modName}/{modName}.lua";
         var luaEntry = RequireBlob(entries, luaPath);
         var version = TitleVersionSync.ReadModVersionText(
             Encoding.UTF8.GetString(ReadGitBlob(root, luaEntry.ObjectId)), luaPath);
@@ -1050,19 +1054,19 @@ public static partial class PublicationReceiptGate
         });
     }
 
-    private static LivePublicationSnapshot QueryLiveSnapshot(string root, string sourceCommit)
+    private static LivePublicationSnapshot QueryLiveSnapshot(string root, string sourceCommit, string repository)
     {
         var top = Run("git", new[] { "-C", root, "rev-parse", "--show-toplevel" }).Trim();
         _ = RunBinary("git", new[] { "--no-replace-objects", "-C", top, "cat-file", "-e", $"{sourceCommit}^{{commit}}" });
 
-        using var repoDoc = JsonDocument.Parse(Run("gh", new[] { "api", $"repos/{GitHubRepo}" }));
+        using var repoDoc = JsonDocument.Parse(Run("gh", new[] { "api", $"repos/{repository}" }));
         var defaultBranch = repoDoc.RootElement.GetProperty("default_branch").GetString()
             ?? throw new InvalidDataException("GitHub omitted default_branch");
 
         using var pullsDoc = JsonDocument.Parse(Run("gh", new[]
         {
             "api", "-H", "Accept: application/vnd.github+json",
-            $"repos/{GitHubRepo}/commits/{sourceCommit}/pulls?per_page=100"
+            $"repos/{repository}/commits/{sourceCommit}/pulls?per_page=100"
         }));
         var mergedPr = pullsDoc.RootElement.EnumerateArray()
             .Where(p => p.TryGetProperty("merged_at", out var merged) && merged.ValueKind != JsonValueKind.Null)
@@ -1079,14 +1083,14 @@ public static partial class PublicationReceiptGate
         {
             "api", "--paginate", "--slurp",
             "-H", "Accept: application/vnd.github+json",
-            $"repos/{GitHubRepo}/commits/{sourceCommit}/check-runs" +
+            $"repos/{repository}/commits/{sourceCommit}/check-runs" +
                 "?filter=all&per_page=100"
         }), sourceCommit);
 
         // The live default branch is the only mutable pointer relevant to
         // authorization. Local HEAD/index/worktree are never consulted for
         // source bytes, so a same-user commit checkout cannot swap the payload.
-        using var refDoc = JsonDocument.Parse(Run("gh", new[] { "api", $"repos/{GitHubRepo}/git/ref/heads/{defaultBranch}" }));
+        using var refDoc = JsonDocument.Parse(Run("gh", new[] { "api", $"repos/{repository}/git/ref/heads/{defaultBranch}" }));
         var defaultSha = refDoc.RootElement.GetProperty("object").GetProperty("sha").GetString()
             ?? throw new InvalidDataException("GitHub omitted default branch SHA");
 
@@ -1338,8 +1342,15 @@ public static partial class PublicationReceiptGate
     private sealed record BoundedCapture(byte[] Bytes, bool Exceeded);
     private sealed record ExactCapture(int Length, bool Exceeded);
 
-    private static string NormalizeRoot(string path) =>
-        Path.GetFullPath(path).TrimEnd('\\', '/');
+    private static string NormalizeRoot(string path)
+    {
+        var full = Path.GetFullPath(path).TrimEnd('\\', '/');
+        // Standalone VMB projects can discover a mod through a directory junction.
+        // Bind receipt identity to its actual repository, not the discovery alias.
+        if (Directory.Exists(full))
+            full = new DirectoryInfo(full).ResolveLinkTarget(true)?.FullName ?? full;
+        return full.TrimEnd('\\', '/');
+    }
     private static bool SameSha(string? a, string? b) =>
         !string.IsNullOrWhiteSpace(a) &&
         string.Equals(a.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);

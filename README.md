@@ -1,7 +1,12 @@
 # VMB Launcher
 
 A Windows GUI and headless build/deploy boundary for Vermintide 2 mods.
-Workshop mutation is authorization-bound to a reviewed monorepo ship transaction.
+Workshop mutation is authorization-bound to a reviewed ship transaction.
+Supported repositories are `Ensrick/vermintide-2-tweaker` and the standalone
+`Ensrick/doomrocket-private` / `Ensrick/doomrocket-public` channels. The latter
+keep their root mod layout and existing distinct Workshop IDs. They use their
+adaptation of the same two-phase claim/build/QA/merge/hosted-receipt workflow;
+direct uploads without that authorization remain rejected.
 
 ![Workflow: Build, Deploy, Upload — one click each](https://img.shields.io/badge/platform-windows-blue) ![C#](https://img.shields.io/badge/.NET-9.0-512BD4) ![License](https://img.shields.io/badge/license-MIT-green)
 

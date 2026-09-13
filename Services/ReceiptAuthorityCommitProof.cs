@@ -123,7 +123,7 @@ public static partial class PublicationReceiptGate
         if (authority == "tracked")
         {
             var descriptor = ReadCommitBlobProof(
-                root, entries, $"{modName}/{modName}.mod");
+                root, entries, $"{PublicationRepositoryProfile.Prefix(modName)}{modName}.mod");
             var output = ValidateOutputSet(
                 snapshot.BundleFiles,
                 modName,
@@ -151,7 +151,7 @@ public static partial class PublicationReceiptGate
             throw new InvalidDataException(
                 "Receipt bundle authority forbids tracked source-commit bundleV2 blobs.");
 
-        var receiptPath = $"{modName}/.build-receipt.json";
+        var receiptPath = $"{PublicationRepositoryProfile.Prefix(modName)}.build-receipt.json";
         var receiptBlob = ReadCommitBlobProof(root, entries, receiptPath);
         BuildReceiptV3 buildReceipt;
         try
@@ -349,7 +349,7 @@ public static partial class PublicationReceiptGate
 
     private static void ValidateIgnoreState(string text, string modName, string authority)
     {
-        var rule = $"/{modName}/bundleV2/";
+        var rule = $"/{PublicationRepositoryProfile.Prefix(modName)}bundleV2/";
         var count = text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n')
@@ -382,10 +382,11 @@ public static partial class PublicationReceiptGate
             file => file.Length,
             "Committed build receipt output_files map");
 
-        var prefix = $"{modName}/";
+        var prefix = PublicationRepositoryProfile.Prefix(modName);
         var sourceEntries = entries.Values
             .Where(entry => entry.Path.StartsWith(prefix, StringComparison.Ordinal))
             .Where(entry => IsBuildReceiptSourcePath(entry.Path[prefix.Length..]))
+            .Where(entry => modName != "doomrocket" || !System.Text.RegularExpressions.Regex.IsMatch(entry.Path, @"(^|/)(\.[^/]+|__pycache__)/"))
             .OrderBy(entry => entry.Path[prefix.Length..], StringComparer.Ordinal)
             .ToList();
         foreach (var entry in sourceEntries) RequireRegularBlob(entry, entry.Path);
@@ -642,7 +643,7 @@ public static partial class PublicationReceiptGate
         // input while retaining the LF/CRLF/binary semantics used by the build.
         var attributeEntries = entries.Values
             .Where(entry => entry.Path == ".gitattributes" ||
-                (entry.Path.StartsWith($"{modName}/", StringComparison.Ordinal) &&
+                (entry.Path.StartsWith(PublicationRepositoryProfile.Prefix(modName), StringComparison.Ordinal) &&
                  entry.Path.EndsWith("/.gitattributes", StringComparison.Ordinal)))
             .OrderBy(entry => entry.Path.Count(character => character == '/'))
             .ThenBy(entry => entry.Path, StringComparer.Ordinal)
@@ -680,7 +681,7 @@ public static partial class PublicationReceiptGate
             var policy = ResolveCheckoutPolicy(entry.Path, rules);
             var bytes = ApplyCheckoutPolicy(entry.Path, blob, policy);
             hashes.Add(
-                entry.Path[(modName.Length + 1)..],
+                entry.Path[PublicationRepositoryProfile.Prefix(modName).Length..],
                 HashBytes(bytes));
         }
         return hashes;
