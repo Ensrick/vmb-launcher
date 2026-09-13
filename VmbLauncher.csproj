@@ -20,6 +20,9 @@
     <AssemblyTitle>VMB Launcher</AssemblyTitle>
     <FileVersion>0.6.4.0</FileVersion>
     <InformationalVersion>0.6.4</InformationalVersion>
+    <!-- Receipt producers read the published EXE's Win32 ProductVersion.
+         Keep the in-process builder identity identical to that declared version. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Custom entry point so headless mode can attach to the parent console
          before WPF would otherwise allocate one. See Program.cs. -->
     <StartupObject>VmbLauncher.Program</StartupObject>
