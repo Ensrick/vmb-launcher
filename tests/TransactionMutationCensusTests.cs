@@ -238,16 +238,16 @@ public class TransactionMutationCensusTests
             "Services/ProcessTreeGuard.cs:55:22:1:AssignProcessToJobObject",
             "Services/ProcessTreeGuard.cs:126:38:1:Process.instance.Kill",
             "Services/ProcessTreeGuard.cs:180:14:1:CreateProcessW",
-            "Services/PublicationReceiptGate.cs:943:28:1:new FileStream",
-            "Services/PublicationReceiptGate.cs:1157:29:1:Process.Start",
-            "Services/PublicationReceiptGate.cs:1201:29:1:Process.Start",
-            "Services/PublicationReceiptGate.cs:1275:17:1:stream.Write",
-            "Services/PublicationReceiptGate.cs:1322:37:1:Process.instance.Kill",
+            "Services/PublicationReceiptGate.cs:947:28:1:new FileStream",
+            "Services/PublicationReceiptGate.cs:1161:29:1:Process.Start",
+            "Services/PublicationReceiptGate.cs:1205:29:1:Process.Start",
+            "Services/PublicationReceiptGate.cs:1279:17:1:stream.Write",
+            "Services/PublicationReceiptGate.cs:1326:37:1:Process.instance.Kill",
             // Receipt authority reconstructs source checkout bytes through the
             // committed blobs and a constrained in-memory EOL transform; it
             // adds no filesystem mutation site.
-            "Services/ReceiptAuthorityCommitProof.cs:776:38:1:stream.Write",
-            "Services/ReceiptAuthorityCommitProof.cs:777:13:1:stream.Write",
+            "Services/ReceiptAuthorityCommitProof.cs:777:38:1:stream.Write",
+            "Services/ReceiptAuthorityCommitProof.cs:778:13:1:stream.Write",
             // Consumer-neutral output fingerprint construction is memory-only.
             "Services/ReceiptAuthorityLocalDeploy.cs:71:13:1:stream.Write",
             "Services/ReceiptAuthorityLocalDeploy.cs:72:13:1:stream.Write",
