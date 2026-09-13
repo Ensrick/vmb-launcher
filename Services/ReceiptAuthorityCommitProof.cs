@@ -789,6 +789,15 @@ public static partial class PublicationReceiptGate
         if (rule.Pattern == "*") return true;
         if (rule.Pattern.StartsWith("*.", StringComparison.Ordinal))
             return Path.GetFileName(relative).EndsWith(rule.Pattern[1..], StringComparison.Ordinal);
+        if (rule.Pattern.Contains('*'))
+        {
+            // A slash anchors the rule to this exact directory. Git's single
+            // star matches a filename here, never descendants of that directory.
+            var slash = rule.Pattern.LastIndexOf('/');
+            return relative.LastIndexOf('/') == slash &&
+                relative.StartsWith(rule.Pattern[..(slash + 1)], StringComparison.Ordinal) &&
+                relative[(slash + 1)..].EndsWith(rule.Pattern[(slash + 2)..], StringComparison.Ordinal);
+        }
         return rule.Pattern.Contains('/')
             ? relative == rule.Pattern
             : Path.GetFileName(relative) == rule.Pattern;
@@ -800,9 +809,13 @@ public static partial class PublicationReceiptGate
             pattern.EndsWith('/') || pattern.Contains('\\') || pattern.Contains('[') ||
             pattern.Contains('?')) return false;
         var starCount = pattern.Count(character => character == '*');
-        return starCount == 0 || pattern == "*" ||
+        if (starCount == 0 || pattern == "*" ||
             (starCount == 1 && pattern.StartsWith("*.", StringComparison.Ordinal) &&
-             !pattern[2..].Contains('/'));
+             !pattern[2..].Contains('/'))) return true;
+        var slash = pattern.LastIndexOf('/');
+        return starCount == 1 && slash > 0 && IsCanonicalRepoPath(pattern[..slash]) &&
+            pattern[(slash + 1)..].StartsWith("*.", StringComparison.Ordinal) &&
+            pattern.Length > slash + 3;
     }
 
     internal static void RequireWindowsMaterializableRepoPath(string repoPath)
