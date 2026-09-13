@@ -1,5 +1,15 @@
 # VMB Launcher Changelog
 
+## v0.6.4 (2026-09-13)
+
+- Support Warlock's standalone development and public repositories through the
+  existing hosted-receipt publisher. Each repository is bound to its original
+  Workshop ID, version suffix and default branch; cross-channel uploads fail.
+- Resolve Warlock source/output proofs at the repository root and preserve the
+  existing Tweaker subdirectory layout. A VMB discovery junction resolves to
+  the real repository for receipt identity. All hosted QA, claim, exact-byte,
+  transaction and Steam readiness gates remain in place.
+
 ## v0.6.3 (2026-09-12)
 
 ### Fixed: stale Steamworks registration crashed every Workshop upload (vermintide-2-tweaker#1548)

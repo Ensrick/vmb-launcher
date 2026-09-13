@@ -199,7 +199,7 @@ public static partial class PublicationReceiptGate
             var expectedAssetPrefix = purpose == CommitQualifiedReceiptPurpose.LocalDeploy
                 ? "deployment-receipt-"
                 : "publication-receipt-";
-            if (untrusted.Repository != GitHubRepo ||
+            if (!PublicationRepositoryProfile.Allows(untrusted.Repository, untrusted.Mod) ||
                 string.IsNullOrWhiteSpace(untrusted.ReleaseTag) ||
                 !System.Text.RegularExpressions.Regex.IsMatch(untrusted.Mod, "^[a-z0-9_]+$") ||
                 untrusted.ReceiptAssetName != expectedAssetPrefix + untrusted.Mod + ".json")
@@ -233,7 +233,7 @@ public static partial class PublicationReceiptGate
                 throw new InvalidDataException(
                     "Exact source-commit itemV2.cfg has no published_id field.");
 
-            var live = QueryLiveSnapshot(mod.ModDir, receipt.SourceCommit);
+            var live = QueryLiveSnapshot(mod.ModDir, receipt.SourceCommit, receipt.Repository);
             var owner = ShipOwnerId.Resolve(live.SourceRoot);
             var claim = ShipClaimGate.Evaluate(
                 ShipClaimGate.DefaultClaimsDir(),
