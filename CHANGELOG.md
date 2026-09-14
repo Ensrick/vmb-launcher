@@ -2,6 +2,12 @@
 
 ## v0.6.4 (2026-09-13)
 
+- Reconstruct directory-scoped extension rules such as `wwise/*.json` in
+  committed Git attributes. Match Git's direct-child scope without accepting
+  recursive wildcards, ambiguous directories or executable filters.
+- Keep assembly and published EXE builder versions identical so the native
+  verifier accepts the version recorded by canonical BuildOnly receipts.
+
 - Support Warlock's standalone development and public repositories through the
   existing hosted-receipt publisher. Each repository is bound to its original
   Workshop ID, version suffix and default branch; cross-channel uploads fail.

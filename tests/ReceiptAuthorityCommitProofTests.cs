@@ -15,6 +15,38 @@ public class ReceiptAuthorityCommitProofTests : MutationTestBase
     private const string Attributes = "* text=auto\n*.cfg text eol=lf\n*.lua text eol=lf\n*.mod text eol=lf\n*.json text eol=lf\n*.ps1 text eol=crlf\n*.jpg binary\n*.mod_bundle binary\n";
 
     [Fact]
+    public void ReadAuthorizedCommitSnapshot_DirectoryExtensionGlobMatchesGitWithoutMatchingDescendants()
+    {
+        using var fixture = CreateFixture(
+            attributesText: Attributes + "*.json text eol=crlf\nmodx/wwise/*.json text eol=lf\n",
+            extraSources: new Dictionary<string, string>
+            {
+                ["wwise/direct.json"] = "direct\n",
+                ["wwise/nested/deep.json"] = "nested\r\n",
+                ["other/direct.json"] = "other\r\n",
+            });
+        Assert.EndsWith(": lf", Git(fixture.Path, "check-attr", "eol", "--", "modx/wwise/direct.json"));
+        Assert.EndsWith(": crlf", Git(fixture.Path, "check-attr", "eol", "--", "modx/wwise/nested/deep.json"));
+        Assert.EndsWith(": crlf", Git(fixture.Path, "check-attr", "eol", "--", "modx/other/direct.json"));
+        var snapshot = PublicationReceiptGate.ReadAuthorizedCommitSnapshot(
+            fixture.Path, fixture.Commit, "modx", "receipt");
+        Assert.Equal("receipt", snapshot.BundleAuthority);
+    }
+
+    [Theory]
+    [InlineData("modx/**.json")]
+    [InlineData("mod*/wwise/*.json")]
+    [InlineData("modx/../wwise/*.json")]
+    [InlineData("modx//wwise/*.json")]
+    public void ReadAuthorizedCommitSnapshot_RejectsBroaderOrAmbiguousDirectoryGlobs(string pattern)
+    {
+        using var fixture = CreateFixture(attributesText: Attributes + pattern + " text eol=lf\n");
+        var error = Assert.Throws<InvalidDataException>(() => PublicationReceiptGate.ReadAuthorizedCommitSnapshot(
+            fixture.Path, fixture.Commit, "modx", "receipt"));
+        Assert.Contains("unsupported", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ReadAuthorizedCommitSnapshot_ReconstructsReceiptAuthorityFromCommit()
     {
         using var fixture = CreateFixture();
@@ -525,7 +557,8 @@ public class ReceiptAuthorityCommitProofTests : MutationTestBase
         string? ignoreText = null,
         Func<string, string>? mutateReceiptJson = null,
         string? attributesText = null,
-        string luaText = "local MOD_VERSION = \"1.2.3-dev\"\n")
+        string luaText = "local MOD_VERSION = \"1.2.3-dev\"\n",
+        Dictionary<string, string>? extraSources = null)
     {
         var tmp = new TempDir();
         tmp.Write(".gitattributes", attributesText ?? Attributes);
@@ -548,6 +581,8 @@ public class ReceiptAuthorityCommitProofTests : MutationTestBase
         tmp.Write(
             @"modx\scripts\mods\modx\modx.lua",
             luaText);
+        foreach (var extra in extraSources ?? new Dictionary<string, string>())
+            tmp.Write("modx/" + extra.Key, extra.Value);
 
         Git(tmp.Path, "init");
         Git(tmp.Path, "config", "user.email", "tests@example.invalid");
@@ -563,7 +598,7 @@ public class ReceiptAuthorityCommitProofTests : MutationTestBase
             "preview.jpg",
             "scripts/mods/modx/modx.lua",
             "tool.ps1",
-        }.Select(relative => new BuildReceiptSourceFile
+        }.Concat(extraSources?.Keys ?? Enumerable.Empty<string>()).Select(relative => new BuildReceiptSourceFile
         {
             Path = relative,
             GitBlob = Git(tmp.Path, "rev-parse", $"{sourceCommit}:modx/{relative}"),
